@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 from utils.logger import get_logger
 from core.security_rules import get_security_rule_engine
+from core.enhanced_ast_analyzer import get_enhanced_ast_analyzer
 
 logger = get_logger(__name__)
 
@@ -187,25 +188,55 @@ class FileAnalyzer:
         return self.supported_languages.get(suffix)
 
     def _analyze_ast(self, content: str, language: str) -> Dict[str, Any]:
-        """AST分析"""
-        features = {
-            "functions": 0,
-            "classes": 0,
-            "imports": 0,
-            "loops": 0,
-            "conditions": 0,
-            "try_except": 0,
-            "dangerous_functions": 0,
-            "max_depth": 0,
-        }
-
+        """AST分析 - 使用增强型分析器"""
         if language == "python":
-            features = self._analyze_python_ast(content)
-        elif language in ["javascript", "typescript"]:
-            features = self._analyze_js_features(content)
-        # 可以扩展其他语言的AST分析
+            # 使用增强型AST分析器
+            enhanced_analyzer = get_enhanced_ast_analyzer()
+            enhanced_result = enhanced_analyzer.analyze_file("temp_file.py", content)
 
-        return features
+            # 兼容原有格式，同时添加增强信息
+            features = enhanced_result.get("complexity_metrics", {})
+            features.update(
+                {
+                    "enhanced_security_findings": enhanced_result.get(
+                        "security_findings", []
+                    ),
+                    "enhanced_risk_score": enhanced_result.get("risk_score", 0.0),
+                    "call_graph": enhanced_result.get("call_graph", {}),
+                    "data_flow_issues": enhanced_result.get("data_flow_issues", []),
+                }
+            )
+
+            # 确保原有字段存在
+            required_fields = {
+                "functions": 0,
+                "classes": 0,
+                "imports": 0,
+                "loops": 0,
+                "conditions": 0,
+                "try_except": 0,
+                "dangerous_functions": 0,
+                "max_depth": 0,
+            }
+            for field, default in required_fields.items():
+                if field not in features:
+                    features[field] = default
+
+            return features
+        elif language in ["javascript", "typescript"]:
+            return self._analyze_js_features(content)
+        else:
+            # 通用特征分析
+            return {
+                "functions": content.count("function"),
+                "classes": content.count("class"),
+                "imports": content.count("import"),
+                "loops": content.count("for") + content.count("while"),
+                "conditions": content.count("if"),
+                "try_except": content.count("try"),
+                "dangerous_functions": 0,
+                "max_depth": 0,
+            }
 
     def _analyze_python_ast(self, content: str) -> Dict[str, Any]:
         """Python AST分析"""

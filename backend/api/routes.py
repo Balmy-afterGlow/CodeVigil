@@ -427,10 +427,49 @@ async def run_analysis_pipeline(
         top_risk_files = file_analyzer.get_top_risk_files(file_results, 20)
         task_manager.update_task_progress(task_id, 70, "正在进行AI深度分析...")
 
-        # 4. AI深度分析
-        ai_results = await ai_analyzer.analyze_high_risk_files(
-            repo_info.local_path, [asdict(result) for result in top_risk_files]
-        )
+        # 4. AI深度分析 - 使用新的批量分析
+        task_manager.update_task_progress(task_id, 70, "正在进行AI深度分析...")
+
+        # 准备AI分析输入
+        from core.ai.analyzer import FileAnalysisInput
+
+        ai_inputs = []
+
+        for file_result in top_risk_files:
+            try:
+                # 读取文件内容
+                full_path = os.path.join(repo_info.local_path, file_result.file_path)
+                with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+                    content = f.read()
+
+                # 获取该文件的git历史（简化版，实际可从repo_manager获取）
+                fix_commits = []
+                # 这里应该从repo_manager获取具体文件的git历史
+                # 临时使用空列表，后续可完善
+
+                ai_input = FileAnalysisInput(
+                    file_path=file_result.file_path,
+                    content=content,
+                    language=file_result.language,
+                    git_commits=fix_commits,
+                    ast_features=file_result.ast_features,
+                    existing_issues=[
+                        {
+                            "severity": issue.severity,
+                            "rule_id": issue.rule_id,
+                            "message": issue.message,
+                            "line_number": issue.line_number,
+                        }
+                        for issue in file_result.security_issues
+                    ],
+                )
+                ai_inputs.append(ai_input)
+
+            except Exception as e:
+                logger.warning(f"准备AI输入失败 {file_result.file_path}: {e}")
+
+        # 批量AI分析
+        ai_results = await ai_analyzer.analyze_files_batch(ai_inputs)
 
         # 5. RAG增强分析 - 获取相关安全建议
         task_manager.update_task_progress(task_id, 85, "正在生成安全建议...")
