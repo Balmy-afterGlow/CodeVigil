@@ -6,7 +6,7 @@ import time
 import os
 from dataclasses import asdict
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import json
 
 from models.request_models import AnalysisRequest, RepositoryUrl
@@ -519,3 +519,121 @@ async def run_analysis_pipeline(
     except Exception as e:
         logger.error(f"分析任务失败 {task_id}: {e}")
         task_manager.fail_task(task_id, str(e))
+
+
+@api_router.post("/generate-cve-enhanced-diff")
+async def generate_cve_enhanced_diff(vulnerability_info: Dict[str, Any]):
+    """
+    基于漏洞信息和CVE知识库生成增强的修复diff
+    """
+    try:
+        # 初始化CVE知识库
+        from ..core.cve_knowledge_base import CVEFixesKnowledgeBase
+
+        cve_kb = CVEFixesKnowledgeBase()
+
+        # 提取漏洞信息
+        vuln_description = vulnerability_info.get("description", "")
+        code_snippet = vulnerability_info.get("code_snippet", "")
+        file_path = vulnerability_info.get("file_path", "")
+        language = vulnerability_info.get("language", "")
+
+        # 生成CVE上下文
+        cve_context = cve_kb.generate_diff_context_for_ai(
+            vulnerability_description=vuln_description,
+            code_snippet=code_snippet,
+            language=language,
+            limit=3,
+        )
+
+        # 搜索相关CVE
+        similar_cves = cve_kb.search_similar_vulnerabilities(
+            vulnerability_description=vuln_description,
+            code_snippet=code_snippet,
+            language=language,
+            limit=5,
+        )
+
+        return {
+            "status": "success",
+            "cve_context": cve_context,
+            "similar_cves": similar_cves,
+            "file_path": file_path,
+            "recommendations": "基于CVE知识库的修复建议已生成",
+        }
+
+    except Exception as e:
+        logger.error(f"生成CVE增强diff失败: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@api_router.post("/ai-enhanced-analysis")
+async def ai_enhanced_analysis(analysis_request: Dict[str, Any]):
+    """
+    AI增强分析：在初次AI分析后，结合CVE知识库进行二次分析
+    用于生成更精确的diff和CVE关联
+    """
+    try:
+        # 获取初次分析结果
+        vulnerabilities = analysis_request.get("vulnerabilities", [])
+        file_path = analysis_request.get("file_path", "")
+
+        if not vulnerabilities:
+            return {"status": "error", "message": "未提供漏洞信息"}
+
+        # 初始化AI分析器和CVE知识库
+        from ..core.ai.analyzer import AIAnalyzer
+        from ..core.cve_knowledge_base import CVEFixesKnowledgeBase
+
+        ai_analyzer = AIAnalyzer()
+        cve_kb = CVEFixesKnowledgeBase()
+
+        enhanced_results = []
+
+        for vuln in vulnerabilities:
+            try:
+                # 为每个漏洞生成CVE上下文
+                cve_context = cve_kb.generate_diff_context_for_ai(
+                    vulnerability_description=vuln.get("description", ""),
+                    code_snippet=vuln.get("code_snippet", ""),
+                    language=ai_analyzer._extract_language_from_path(file_path),
+                )
+
+                # 搜索相关CVE
+                similar_cves = cve_kb.search_similar_vulnerabilities(
+                    vulnerability_description=vuln.get("description", ""),
+                    code_snippet=vuln.get("code_snippet", ""),
+                    language=ai_analyzer._extract_language_from_path(file_path),
+                    limit=3,
+                )
+
+                # 使用AI生成增强的修复建议
+                enhanced_remediation = await ai_analyzer._generate_enhanced_remediation(
+                    vuln, similar_cves, file_path
+                )
+
+                enhanced_vuln = vuln.copy()
+                enhanced_vuln.update(
+                    {
+                        "cve_context": cve_context,
+                        "related_cves": similar_cves,
+                        "enhanced_remediation": enhanced_remediation,
+                    }
+                )
+
+                enhanced_results.append(enhanced_vuln)
+
+            except Exception as e:
+                logger.warning(f"增强分析失败 {vuln.get('title', 'Unknown')}: {e}")
+                enhanced_results.append(vuln)
+
+        return {
+            "status": "success",
+            "file_path": file_path,
+            "enhanced_vulnerabilities": enhanced_results,
+            "summary": f"成功增强分析了 {len(enhanced_results)} 个漏洞",
+        }
+
+    except Exception as e:
+        logger.error(f"AI增强分析失败: {e}")
+        return {"status": "error", "message": str(e)}

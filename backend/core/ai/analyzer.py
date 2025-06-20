@@ -1,17 +1,19 @@
 """
 AI分析模块
 使用大语言模型对高风险文件进行深度安全分析
+支持与CVE知识库联动，自动生成diff和CVE关联
 """
 
 import os
 import json
 import asyncio
+import logging
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 import openai
-from utils.logger import get_logger
+from core.rag.cve_knowledge_base import CVEfixesKnowledgeBase
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,10 +71,13 @@ class AIAnalysisResult:
 
 
 class AIAnalyzer:
-    """AI分析器"""
+    """AI分析器，支持CVE知识库增强"""
 
     def __init__(
-        self, api_key: str = None, base_url: str = None, model: str = "deepseek-coder"
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        model: str = "deepseek-coder",
     ):
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
         self.base_url = base_url or os.getenv(
@@ -84,8 +89,10 @@ class AIAnalyzer:
             raise ValueError("AI API密钥未配置")
 
         # 配置OpenAI客户端（兼容DeepSeek API）
-        openai.api_key = self.api_key
-        openai.api_base = self.base_url
+        self.client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
+
+        # 初始化CVE知识库
+        self.cve_kb = CVEfixesKnowledgeBase()
 
         # 分析提示词模板
         self.vulnerability_analysis_prompt = """
@@ -183,7 +190,11 @@ Git历史信息:
                         logger.error(f"单文件分析失败 {file_input.file_path}: {e2}")
 
         logger.info(f"AI批量分析完成，共分析 {len(results)} 个文件")
-        return results
+
+        # CVE增强分析：对发现的漏洞进行CVE关联和diff生成
+        enhanced_results = await self._enhance_with_cve_knowledge(results)
+
+        return enhanced_results
 
     async def _analyze_batch_internal(
         self, batch: List[FileAnalysisInput]
@@ -314,7 +325,7 @@ Git历史信息:
     async def _call_ai_api(self, prompt: str) -> str:
         """调用AI API"""
         try:
-            response = openai.ChatCompletion.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {
@@ -328,7 +339,7 @@ Git历史信息:
                 timeout=60,
             )
 
-            return response.choices[0].message.content
+            return response.choices[0].message.content or ""
 
         except Exception as e:
             logger.error(f"AI API调用失败: {e}")
@@ -390,6 +401,9 @@ Git历史信息:
                     fix_suggestions=fix_suggestions,
                     confidence=file_data.get("confidence", 0.5),
                     analysis_reasoning=file_data.get("analysis_reasoning", ""),
+                    overall_risk=file_data.get("overall_risk", "medium"),
+                    summary=file_data.get("summary", ""),
+                    analysis_time=0.0,  # 这里可以计算实际分析时间
                 )
                 results.append(result)
 
@@ -443,6 +457,9 @@ JSON格式输出:
                     fix_suggestions=[],
                     confidence=data.get("confidence", 0.3),
                     analysis_reasoning=data.get("analysis_reasoning", "降级分析"),
+                    overall_risk=data.get("overall_risk", "medium"),
+                    summary=data.get("summary", "降级分析结果"),
+                    analysis_time=0.0,
                 )
 
         except Exception as e:
@@ -450,43 +467,693 @@ JSON格式输出:
 
         return None
 
-    # 向后兼容的旧接口
-    async def analyze_high_risk_files(
-        self, repo_path: str, file_analysis_results: List[Dict]
+    async def _enhance_with_cve_knowledge(
+        self, analysis_results: List[AIAnalysisResult]
     ) -> List[AIAnalysisResult]:
         """
-        向后兼容接口：使用新的批量分析方法
+        使用CVE知识库增强分析结果
+        自动为发现的漏洞关联CVE和生成修复diff
         """
-        # 转换为新的输入格式
-        file_inputs = []
-        for file_result in file_analysis_results:
+        enhanced_results = []
+
+        for result in analysis_results:
+            enhanced_result = result
+
+            # 对每个漏洞进行CVE知识库检索
+            if result.vulnerabilities:
+                enhanced_vulnerabilities = []
+
+                for vuln in result.vulnerabilities:
+                    try:
+                        # 检索相似的CVE修复案例
+                        similar_cves = self.cve_kb.search_similar_vulnerabilities(
+                            vulnerability_description=vuln.description,
+                            code_snippet=vuln.code_snippet,
+                            language=self._extract_language_from_path(result.file_path),
+                            severity=vuln.severity,
+                            limit=3,
+                        )
+
+                        # 创建增强后的漏洞对象（保持原有字段不变）
+                        enhanced_vuln = VulnerabilityInfo(
+                            title=vuln.title,
+                            severity=vuln.severity,
+                            cwe_id=vuln.cwe_id,
+                            description=vuln.description,
+                            location=vuln.location,
+                            code_snippet=vuln.code_snippet,
+                            impact=vuln.impact,
+                            remediation=vuln.remediation,
+                            confidence=vuln.confidence,
+                        )
+
+                        # 如果找到相关CVE，生成增强的修复建议
+                        if similar_cves:
+                            enhanced_remediation = (
+                                await self._generate_enhanced_remediation(
+                                    vuln.__dict__, similar_cves, result.file_path
+                                )
+                            )
+                            # 更新修复建议（确保类型一致）
+                            if isinstance(enhanced_remediation, str):
+                                enhanced_vuln.remediation = enhanced_remediation
+
+                        enhanced_vulnerabilities.append(enhanced_vuln)
+
+                    except Exception as e:
+                        logger.warning(f"CVE增强分析失败 {result.file_path}: {e}")
+                        enhanced_vulnerabilities.append(vuln)
+
+                enhanced_result.vulnerabilities = enhanced_vulnerabilities
+
+            enhanced_results.append(enhanced_result)
+
+        return enhanced_results
+
+    async def _generate_enhanced_remediation(
+        self,
+        vulnerability: Dict[str, Any],
+        similar_cves: List[Dict[str, Any]],
+        file_path: str,
+    ) -> Dict[str, Any]:
+        """
+        基于CVE知识库生成增强的修复建议
+        包含diff和CVE链接
+        """
+        try:
+            # 构建CVE上下文信息
+            cve_context = self._build_cve_context(similar_cves)
+
+            # 生成增强修复提示词
+            prompt = f"""
+作为一个资深的代码安全专家，基于以下CVE修复案例和当前发现的漏洞，生成具体的修复建议。
+
+当前漏洞信息:
+- 类型: {vulnerability.get("title", "")}
+- 严重程度: {vulnerability.get("severity", "")}
+- CWE: {vulnerability.get("cwe_id", "")}
+- 描述: {vulnerability.get("description", "")}
+- 代码片段:
+```
+{vulnerability.get("code_snippet", "")}
+```
+
+相关CVE修复案例:
+{cve_context}
+
+请基于这些CVE修复模式，生成以下内容:
+
+1. 具体的修复diff（展示修改前后的代码）
+2. 修复步骤说明
+3. 最相关的CVE链接
+4. 修复验证方法
+
+请按照以下JSON格式输出:
+{{
+    "fix_diff": {{
+        "before": "修改前的代码",
+        "after": "修改后的代码", 
+        "explanation": "修改说明"
+    }},
+    "fix_steps": [
+        "步骤1: ...",
+        "步骤2: ..."
+    ],
+    "most_relevant_cve": "CVE-XXXX-XXXX",
+    "cve_link": "https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-XXXX-XXXX",
+    "verification_method": "验证修复的方法"
+}}
+"""
+
+            # 调用AI生成增强修复建议
+            response = await self._call_ai_api(prompt)
+
+            # 解析响应
+            json_start = response.find("{")
+            json_end = response.rfind("}") + 1
+
+            if json_start != -1 and json_end > json_start:
+                json_str = response[json_start:json_end]
+                enhanced_remediation = json.loads(json_str)
+                return enhanced_remediation
+            else:
+                logger.warning(f"CVE增强修复建议解析失败: {file_path}")
+                return {"error": "解析失败"}
+
+        except Exception as e:
+            logger.error(f"生成CVE增强修复建议失败: {e}")
+            return {"error": str(e)}
+
+    def _build_cve_context(self, similar_cves: List[Dict[str, Any]]) -> str:
+        """构建CVE上下文信息"""
+        context_parts = []
+
+        for i, cve in enumerate(similar_cves[:3], 1):  # 只使用前3个最相关的CVE
+            context_parts.append(f"""
+CVE案例 {i}: {cve.get("cve_id", "Unknown")}
+- 严重程度: {cve.get("severity", "Unknown")}  
+- CWE: {cve.get("cwe_id", "Unknown")}
+- 修复模式: {cve.get("fix_pattern", "No pattern available")}
+- 修复示例:
+  修改前: {cve.get("vulnerability_pattern", "No example available")}
+  修改后: {cve.get("fix_pattern", "No fix available")}
+""")
+
+        return "\n".join(context_parts)
+
+    def _extract_language_from_path(self, file_path: str) -> str:
+        """从文件路径提取编程语言"""
+        ext_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".java": "java",
+            ".c": "c",
+            ".cpp": "cpp",
+            ".php": "php",
+            ".go": "go",
+            ".rs": "rust",
+        }
+
+        ext = os.path.splitext(file_path)[1].lower()
+        return ext_map.get(ext, "unknown")
+
+    # === 三阶段AI分析核心方法 ===
+
+    async def analyze_files_three_stage(
+        self, file_inputs: List[FileAnalysisInput], risk_threshold: float = 70.0
+    ) -> Dict[str, Any]:
+        """
+        严格的三阶段AI分析流程：
+        1. 批量AI分析所有文件，打分筛选高危文件
+        2. 对高危文件进行AI详细分析，输出漏洞和修复描述
+        3. 用CVEfixes知识库检索相关修复案例，结合AI生成最终diff和CVE关联
+
+        Args:
+            file_inputs: 文件分析输入列表
+            risk_threshold: 高危文件阈值分数 (0-100)
+
+        Returns:
+            Dict包含各阶段分析结果
+        """
+        analysis_start_time = asyncio.get_event_loop().time()
+
+        logger.info(f"开始三阶段AI分析，共{len(file_inputs)}个文件")
+
+        # === 第一阶段：批量风险评估 ===
+        logger.info("第一阶段：批量风险评估")
+        stage1_results = await self._stage1_batch_risk_assessment(file_inputs)
+
+        # 筛选高危文件
+        high_risk_files = [
+            result
+            for result in stage1_results
+            if result.ai_risk_score >= risk_threshold
+        ]
+
+        logger.info(f"第一阶段完成，发现{len(high_risk_files)}个高危文件")
+
+        # === 第二阶段：高危文件详细分析 ===
+        logger.info("第二阶段：高危文件详细分析")
+        stage2_results = []
+        if high_risk_files:
+            stage2_results = await self._stage2_detailed_vulnerability_analysis(
+                [
+                    fi
+                    for fi in file_inputs
+                    if any(hr.file_path == fi.file_path for hr in high_risk_files)
+                ]
+            )
+
+        logger.info(f"第二阶段完成，详细分析了{len(stage2_results)}个高危文件")
+
+        # === 第三阶段：CVE知识库增强和diff生成 ===
+        logger.info("第三阶段：CVE知识库增强和diff生成")
+        stage3_results = []
+        if stage2_results:
+            stage3_results = await self._stage3_cve_enhanced_diff_generation(
+                stage2_results
+            )
+
+        logger.info(f"第三阶段完成，生成了{len(stage3_results)}个CVE增强结果")
+
+        analysis_end_time = asyncio.get_event_loop().time()
+        total_analysis_time = analysis_end_time - analysis_start_time
+
+        return {
+            "stage1_risk_assessment": stage1_results,
+            "stage2_detailed_analysis": stage2_results,
+            "stage3_cve_enhanced": stage3_results,
+            "high_risk_files_count": len(high_risk_files),
+            "total_files_count": len(file_inputs),
+            "risk_threshold": risk_threshold,
+            "total_analysis_time": total_analysis_time,
+            "summary": {
+                "total_files": len(file_inputs),
+                "high_risk_files": len(high_risk_files),
+                "vulnerabilities_found": sum(
+                    len(r.vulnerabilities) for r in stage3_results
+                ),
+                "cve_references": sum(1 for r in stage3_results if r.vulnerabilities),
+                "analysis_time": total_analysis_time,
+            },
+        }
+
+    async def _stage1_batch_risk_assessment(
+        self, file_inputs: List[FileAnalysisInput]
+    ) -> List[AIAnalysisResult]:
+        """第一阶段：批量风险评估，快速打分筛选"""
+
+        # 构建专门的风险评估提示词
+        risk_assessment_prompt = self._build_risk_assessment_prompt(file_inputs)
+
+        try:
+            # 调用AI进行批量风险评估
+            response = await self._call_ai_api(risk_assessment_prompt)
+
+            # 解析风险评估结果
+            return self._parse_risk_assessment_response(response, file_inputs)
+
+        except Exception as e:
+            logger.error(f"第一阶段风险评估失败: {e}")
+            # 降级：为所有文件分配默认风险分数
+            return [
+                AIAnalysisResult(
+                    file_path=fi.file_path,
+                    ai_risk_score=50.0,  # 默认中等风险
+                    vulnerabilities=[],
+                    fix_suggestions=[],
+                    confidence=0.3,
+                    analysis_reasoning="风险评估失败，使用默认分数",
+                    overall_risk="medium",
+                    summary="风险评估阶段失败",
+                    analysis_time=0.0,
+                )
+                for fi in file_inputs
+            ]
+
+    async def _stage2_detailed_vulnerability_analysis(
+        self, high_risk_files: List[FileAnalysisInput]
+    ) -> List[AIAnalysisResult]:
+        """第二阶段：对高危文件进行详细的漏洞分析"""
+
+        detailed_results = []
+
+        # 对每个高危文件进行详细分析
+        for file_input in high_risk_files:
             try:
-                # 读取文件内容
-                full_path = os.path.join(repo_path, file_result["file_path"])
-                with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                result = await self._analyze_single_file_detailed(file_input)
+                if result:
+                    detailed_results.append(result)
 
-                file_input = FileAnalysisInput(
-                    file_path=file_result["file_path"],
-                    content=content,
-                    language=file_result.get("language", "unknown"),
-                    git_commits=file_result.get("git_commits", []),
-                    ast_features=file_result.get("ast_features", {}),
-                    existing_issues=[
-                        {
-                            "severity": issue.severity,
-                            "rule_id": issue.rule_id,
-                            "message": issue.message,
-                            "line_number": issue.line_number,
-                        }
-                        for issue in file_result.get("security_issues", [])
-                    ],
-                )
-                file_inputs.append(file_input)
+                # 添加分析间隔，避免API限流
+                await asyncio.sleep(0.5)
+
             except Exception as e:
-                logger.error(
-                    f"转换文件输入失败 {file_result.get('file_path', 'unknown')}: {e}"
+                logger.error(f"详细分析文件失败 {file_input.file_path}: {e}")
+
+        return detailed_results
+
+    async def _stage3_cve_enhanced_diff_generation(
+        self, detailed_results: List[AIAnalysisResult]
+    ) -> List[AIAnalysisResult]:
+        """第三阶段：CVE知识库增强和diff生成"""
+
+        enhanced_results = []
+
+        for result in detailed_results:
+            try:
+                # 对每个发现漏洞的文件进行CVE增强
+                if result.vulnerabilities:
+                    enhanced_result = await self._enhance_with_cve_and_generate_diff(
+                        result
+                    )
+                    enhanced_results.append(enhanced_result)
+                else:
+                    enhanced_results.append(result)
+
+            except Exception as e:
+                logger.error(f"CVE增强失败 {result.file_path}: {e}")
+                enhanced_results.append(result)
+
+        return enhanced_results
+
+    def _build_risk_assessment_prompt(
+        self, file_inputs: List[FileAnalysisInput]
+    ) -> str:
+        """构建第一阶段风险评估提示词"""
+
+        prompt = """作为代码安全专家，请对以下文件进行快速风险评估打分。
+
+重点关注：
+1. AST分析发现的复杂度和危险函数调用
+2. Git历史中的修复模式和频繁变更
+3. 静态分析发现的潜在问题
+4. 文件类型和代码特征
+
+为每个文件打分(0-100)，分数越高表示安全风险越大。
+
+"""
+
+        # 添加每个文件的简要信息
+        for i, file_input in enumerate(file_inputs[:10], 1):  # 限制数量避免token过多
+            prompt += f"""
+文件{i}: {file_input.file_path}
+- 语言: {file_input.language}
+- Git修改次数: {len(file_input.git_commits)}
+- Fix相关提交: {len(self._extract_fix_commits(file_input.git_commits))}
+- 代码复杂度: {file_input.ast_features.get("complexity", 0)}
+- 静态问题数: {len(file_input.existing_issues)}
+- 文件大小: {len(file_input.content)} 字符
+"""
+
+        prompt += """
+请按以下JSON格式输出风险评分：
+{
+    "risk_scores": [
+        {
+            "file_path": "文件路径",
+            "risk_score": 85.5,
+            "confidence": 0.9,
+            "risk_reasoning": "发现多个高风险函数调用和频繁的安全修复历史",
+            "overall_risk": "high"
+        }
+    ]
+}
+
+请确保风险评分准确，重点识别可能存在安全漏洞的文件。
+"""
+
+        return prompt
+
+    def _parse_risk_assessment_response(
+        self, response: str, file_inputs: List[FileAnalysisInput]
+    ) -> List[AIAnalysisResult]:
+        """解析风险评估响应"""
+
+        try:
+            # 提取JSON部分
+            json_start = response.find("{")
+            json_end = response.rfind("}") + 1
+
+            if json_start != -1 and json_end > json_start:
+                data = json.loads(response[json_start:json_end])
+                risk_scores = data.get("risk_scores", [])
+
+                results = []
+                file_path_map = {fi.file_path: fi for fi in file_inputs}
+
+                for score_data in risk_scores:
+                    file_path = score_data.get("file_path", "")
+                    if file_path in file_path_map:
+                        result = AIAnalysisResult(
+                            file_path=file_path,
+                            ai_risk_score=float(score_data.get("risk_score", 50.0)),
+                            vulnerabilities=[],
+                            fix_suggestions=[],
+                            confidence=float(score_data.get("confidence", 0.5)),
+                            analysis_reasoning=score_data.get("risk_reasoning", ""),
+                            overall_risk=score_data.get("overall_risk", "medium"),
+                            summary="风险评估阶段",
+                            analysis_time=0.0,
+                        )
+                        results.append(result)
+
+                # 为未包含在响应中的文件添加默认分数
+                responded_paths = {r.file_path for r in results}
+                for file_input in file_inputs:
+                    if file_input.file_path not in responded_paths:
+                        results.append(
+                            AIAnalysisResult(
+                                file_path=file_input.file_path,
+                                ai_risk_score=30.0,  # 默认低风险
+                                vulnerabilities=[],
+                                fix_suggestions=[],
+                                confidence=0.3,
+                                analysis_reasoning="未在AI响应中包含",
+                                overall_risk="low",
+                                summary="默认风险评估",
+                                analysis_time=0.0,
+                            )
+                        )
+
+                return results
+
+        except json.JSONDecodeError as e:
+            logger.error(f"风险评估响应JSON解析失败: {e}")
+
+        # 降级处理：返回默认分数
+        return [
+            AIAnalysisResult(
+                file_path=fi.file_path,
+                ai_risk_score=40.0,
+                vulnerabilities=[],
+                fix_suggestions=[],
+                confidence=0.2,
+                analysis_reasoning="风险评估解析失败",
+                overall_risk="medium",
+                summary="解析失败的默认评估",
+                analysis_time=0.0,
+            )
+            for fi in file_inputs
+        ]
+
+    async def _analyze_single_file_detailed(
+        self, file_input: FileAnalysisInput
+    ) -> Optional[AIAnalysisResult]:
+        """对单个文件进行详细的漏洞分析"""
+
+        # 构建详细分析提示词
+        detailed_prompt = self._build_detailed_analysis_prompt(file_input)
+
+        try:
+            response = await self._call_ai_api(detailed_prompt)
+            return self._parse_detailed_analysis_response(response, file_input)
+
+        except Exception as e:
+            logger.error(f"详细分析失败 {file_input.file_path}: {e}")
+            return None
+
+    def _build_detailed_analysis_prompt(self, file_input: FileAnalysisInput) -> str:
+        """构建详细漏洞分析提示词"""
+
+        fix_commits = self._extract_fix_commits(file_input.git_commits)
+
+        prompt = f"""作为资深代码安全专家，请深入分析以下高风险文件的安全漏洞。
+
+文件路径: {file_input.file_path}
+编程语言: {file_input.language}
+
+代码内容:
+```{file_input.language}
+{file_input.content}
+```
+
+AST分析特征:
+{json.dumps(file_input.ast_features, indent=2, ensure_ascii=False)}
+
+静态分析问题:
+{json.dumps(file_input.existing_issues, indent=2, ensure_ascii=False)}
+
+Git修复历史:
+{json.dumps(fix_commits, indent=2, ensure_ascii=False)}
+
+请深入分析以下安全问题：
+1. 注入漏洞（SQL注入、XSS、命令注入等）
+2. 认证和授权缺陷
+3. 敏感信息泄露
+4. 缓冲区溢出和内存安全
+5. 业务逻辑缺陷
+6. 加密和随机数使用问题
+
+输出格式要求：
+{{
+    "vulnerabilities": [
+        {{
+            "title": "具体漏洞标题",
+            "severity": "critical|high|medium|low",
+            "cwe_id": "CWE-XXX",
+            "description": "详细的漏洞描述和成因分析",
+            "location": {{
+                "start_line": 行号,
+                "end_line": 行号, 
+                "function": "函数名"
+            }},
+            "code_snippet": "存在问题的代码片段",
+            "impact": "安全影响和可能的攻击方式",
+            "remediation": "具体的修复建议和代码示例",
+            "confidence": 0.95
+        }}
+    ],
+    "fix_suggestions": [
+        {{
+            "description": "修复措施描述",
+            "original_code": "原始代码",
+            "fixed_code": "修复后的代码",
+            "start_line": 行号,
+            "end_line": 行号,
+            "explanation": "修复原理和实现说明"
+        }}
+    ],
+    "overall_risk": "critical|high|medium|low",
+    "summary": "整体安全评估总结"
+}}
+
+请确保分析深入准确，提供具体可行的修复方案。
+"""
+
+        return prompt
+
+    def _parse_detailed_analysis_response(
+        self, response: str, file_input: FileAnalysisInput
+    ) -> Optional[AIAnalysisResult]:
+        """解析详细分析响应"""
+
+        try:
+            # 提取JSON部分
+            json_start = response.find("{")
+            json_end = response.rfind("}") + 1
+
+            if json_start != -1 and json_end > json_start:
+                data = json.loads(response[json_start:json_end])
+
+                # 解析漏洞信息
+                vulnerabilities = []
+                for vuln_data in data.get("vulnerabilities", []):
+                    vuln = VulnerabilityInfo(
+                        title=vuln_data.get("title", ""),
+                        severity=vuln_data.get("severity", "medium"),
+                        cwe_id=vuln_data.get("cwe_id"),
+                        description=vuln_data.get("description", ""),
+                        location=vuln_data.get("location", {}),
+                        code_snippet=vuln_data.get("code_snippet", ""),
+                        impact=vuln_data.get("impact", ""),
+                        remediation=vuln_data.get("remediation", ""),
+                        confidence=float(vuln_data.get("confidence", 0.5)),
+                    )
+                    vulnerabilities.append(vuln)
+
+                # 解析修复建议
+                fix_suggestions = []
+                for fix_data in data.get("fix_suggestions", []):
+                    fix = CodeFixSuggestion(
+                        description=fix_data.get("description", ""),
+                        original_code=fix_data.get("original_code", ""),
+                        fixed_code=fix_data.get("fixed_code", ""),
+                        start_line=int(fix_data.get("start_line", 0)),
+                        end_line=int(fix_data.get("end_line", 0)),
+                        explanation=fix_data.get("explanation", ""),
+                    )
+                    fix_suggestions.append(fix)
+
+                return AIAnalysisResult(
+                    file_path=file_input.file_path,
+                    ai_risk_score=85.0,  # 高危文件的默认分数
+                    vulnerabilities=vulnerabilities,
+                    fix_suggestions=fix_suggestions,
+                    confidence=0.8,
+                    analysis_reasoning="详细漏洞分析",
+                    overall_risk=data.get("overall_risk", "high"),
+                    summary=data.get("summary", ""),
+                    analysis_time=0.0,
                 )
 
-        # 使用新的批量分析方法
-        return await self.analyze_files_batch(file_inputs)
+        except json.JSONDecodeError as e:
+            logger.error(f"详细分析响应JSON解析失败: {e}")
+
+        return None
+
+    async def _enhance_with_cve_and_generate_diff(
+        self, analysis_result: AIAnalysisResult
+    ) -> AIAnalysisResult:
+        """CVE知识库增强和diff生成"""
+
+        enhanced_vulnerabilities = []
+
+        for vuln in analysis_result.vulnerabilities:
+            try:
+                # 使用CVE知识库检索相关修复案例
+                cve_context = self.cve_kb.generate_diff_context_for_ai(
+                    vulnerability_description=vuln.description,
+                    code_snippet=vuln.code_snippet,
+                    language=self._extract_language_from_path(
+                        analysis_result.file_path
+                    ),
+                )
+
+                # 生成CVE增强的修复建议
+                enhanced_remediation = await self._generate_cve_enhanced_remediation(
+                    vuln, cve_context, analysis_result.file_path
+                )
+
+                # 创建增强后的漏洞信息
+                enhanced_vuln = VulnerabilityInfo(
+                    title=vuln.title,
+                    severity=vuln.severity,
+                    cwe_id=vuln.cwe_id,
+                    description=vuln.description,
+                    location=vuln.location,
+                    code_snippet=vuln.code_snippet,
+                    impact=vuln.impact,
+                    remediation=enhanced_remediation,
+                    confidence=vuln.confidence,
+                )
+
+                enhanced_vulnerabilities.append(enhanced_vuln)
+
+            except Exception as e:
+                logger.warning(f"CVE增强失败: {e}")
+                enhanced_vulnerabilities.append(vuln)
+
+        # 返回增强后的分析结果
+        return AIAnalysisResult(
+            file_path=analysis_result.file_path,
+            ai_risk_score=analysis_result.ai_risk_score,
+            vulnerabilities=enhanced_vulnerabilities,
+            fix_suggestions=analysis_result.fix_suggestions,
+            confidence=analysis_result.confidence,
+            analysis_reasoning=analysis_result.analysis_reasoning + " [CVE增强]",
+            overall_risk=analysis_result.overall_risk,
+            summary=analysis_result.summary + " (已结合CVE知识库增强)",
+            analysis_time=analysis_result.analysis_time,
+        )
+
+    async def _generate_cve_enhanced_remediation(
+        self, vulnerability: VulnerabilityInfo, cve_context: str, file_path: str
+    ) -> str:
+        """生成CVE增强的修复建议"""
+
+        prompt = f"""基于CVE修复案例知识库，为以下漏洞生成增强的修复建议和代码diff。
+
+== 漏洞信息 ==
+标题: {vulnerability.title}
+类型: {vulnerability.cwe_id}
+严重程度: {vulnerability.severity}
+描述: {vulnerability.description}
+问题代码:
+```
+{vulnerability.code_snippet}
+```
+
+== CVE知识库参考 ==
+{cve_context}
+
+== 文件信息 ==
+文件路径: {file_path}
+编程语言: {self._extract_language_from_path(file_path)}
+
+请结合CVE修复案例，生成以下内容：
+1. 详细的修复步骤和原理说明
+2. 具体的代码修改diff
+3. 相关的最佳实践建议
+4. 如何验证修复效果
+
+输出要求简洁实用，重点突出具体的代码修改。
+"""
+
+        try:
+            response = await self._call_ai_api(prompt)
+            return response
+        except Exception as e:
+            logger.error(f"生成CVE增强修复建议失败: {e}")
+            return vulnerability.remediation  # 回退到原始修复建议
