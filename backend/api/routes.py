@@ -2,6 +2,9 @@
 API路由配置
 """
 
+import time
+import os
+from dataclasses import asdict
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from typing import List
 import json
@@ -177,8 +180,3 @@ async def run_analysis_pipeline(
     except Exception as e:
         logger.error(f"分析任务失败 {task_id}: {e}")
         # 这里应该更新任务状态为失败
-
-
-import time
-import os
-from dataclasses import asdict

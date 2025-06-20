@@ -122,7 +122,7 @@ class RepositoryManager:
         }
 
     async def clone_repository(
-        self, repo_url: str, branch: Optional[str] = None, depth: Optional[int] = 1
+        self, repo_url: str, branch: Optional[str] = None, depth: Optional[int] = 100
     ) -> RepositoryInfo:
         """
         克隆Git仓库到临时目录
