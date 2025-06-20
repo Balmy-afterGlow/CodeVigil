@@ -430,7 +430,7 @@ async def run_analysis_pipeline(
         # 4. AI深度分析 - 使用新的批量分析
         task_manager.update_task_progress(task_id, 70, "正在进行AI深度分析...")
 
-        # 准备AI分析输入
+        # 准备AI分析输入 - 包含完整的Git历史分析
         from core.ai.analyzer import FileAnalysisInput
 
         ai_inputs = []
@@ -442,16 +442,16 @@ async def run_analysis_pipeline(
                 with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
                     content = f.read()
 
-                # 获取该文件的git历史（简化版，实际可从repo_manager获取）
-                fix_commits = []
-                # 这里应该从repo_manager获取具体文件的git历史
-                # 临时使用空列表，后续可完善
+                # 获取该文件的Git历史分析
+                git_history = repo_manager.extract_file_git_history(
+                    repo_info.local_path, file_result.file_path
+                )
 
                 ai_input = FileAnalysisInput(
                     file_path=file_result.file_path,
                     content=content,
                     language=file_result.language,
-                    git_commits=fix_commits,
+                    git_commits=git_history,  # 使用真实的Git历史数据
                     ast_features=file_result.ast_features,
                     existing_issues=[
                         {
@@ -468,8 +468,23 @@ async def run_analysis_pipeline(
             except Exception as e:
                 logger.warning(f"准备AI输入失败 {file_result.file_path}: {e}")
 
-        # 批量AI分析
-        ai_results = await ai_analyzer.analyze_files_batch(ai_inputs)
+        # 使用严格的三阶段AI分析
+        three_stage_results = await ai_analyzer.analyze_files_strict_three_stage(
+            ai_inputs,
+            stage1_batch_size=10,  # 第一阶段每批处理10个文件
+            risk_threshold=70.0,  # 风险阈值70分以上为高危
+        )
+
+        # 提取最终的AI分析结果（第三阶段结果）
+        ai_results = three_stage_results.get(
+            "stage3_cve_enhanced_diff_generation", {}
+        ).get("results", [])
+
+        # 如果第三阶段结果为空，使用第二阶段结果作为备用
+        if not ai_results:
+            ai_results = three_stage_results.get(
+                "stage2_detailed_vulnerability_analysis", {}
+            ).get("results", [])
 
         # 5. RAG增强分析 - 获取相关安全建议
         task_manager.update_task_progress(task_id, 85, "正在生成安全建议...")
@@ -490,17 +505,37 @@ async def run_analysis_pipeline(
 
         task_manager.update_task_progress(task_id, 95, "正在保存结果...")
 
-        # 6. 保存结果
+        # 6. 保存结果 - 包含完整的三阶段分析信息
         final_results = {
             "task_id": task_id,
             "repository_info": asdict(repo_info),
             "file_analysis": [asdict(result) for result in file_results],
-            "ai_analysis": [asdict(result) for result in ai_results],
+            "three_stage_ai_analysis": three_stage_results,  # 完整的三阶段结果
+            "final_ai_results": [
+                asdict(result) for result in ai_results
+            ],  # 最终AI分析结果
             "summary": {
                 "total_files": len(file_results),
                 "high_risk_files": len(top_risk_files),
+                "stage1_files_scored": three_stage_results.get(
+                    "stage1_batch_risk_assessment", {}
+                ).get("total_files", 0),
+                "stage2_files_analyzed": three_stage_results.get(
+                    "stage2_detailed_vulnerability_analysis", {}
+                ).get("analyzed_files", 0),
+                "stage3_files_enhanced": three_stage_results.get(
+                    "stage3_cve_enhanced_diff_generation", {}
+                ).get("enhanced_files", 0),
                 "vulnerabilities_found": sum(
-                    len(r.vulnerabilities) for r in ai_results if r.vulnerabilities
+                    len(r.vulnerabilities)
+                    for r in ai_results
+                    if hasattr(r, "vulnerabilities") and r.vulnerabilities
+                ),
+                "cve_references": three_stage_results.get("summary", {}).get(
+                    "cve_references_generated", 0
+                ),
+                "total_analysis_time": three_stage_results.get("summary", {}).get(
+                    "total_analysis_time", 0
                 ),
                 "analysis_timestamp": time.time(),
                 "repository_url": repo_url,

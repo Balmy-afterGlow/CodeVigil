@@ -1157,3 +1157,313 @@ Git修复历史:
         except Exception as e:
             logger.error(f"生成CVE增强修复建议失败: {e}")
             return vulnerability.remediation  # 回退到原始修复建议
+
+    # === 严格三阶段AI分析方法（按照用户需求重构）===
+
+    async def analyze_files_strict_three_stage(
+        self,
+        file_inputs: List[FileAnalysisInput],
+        stage1_batch_size: int = 10,
+        risk_threshold: float = 70.0,
+    ) -> Dict[str, Any]:
+        """
+        严格按照用户需求的三阶段AI分析：
+
+        阶段1: 批量输入全部匹配文件 → AI风险打分 → 筛选高危文件
+        阶段2: 对高危文件逐个进行AI详细分析 → 输出漏洞+修复描述+代码片段行号
+        阶段3: 漏洞信息 + CVE知识库检索 → AI生成具体diff + CVE关联
+
+        Args:
+            file_inputs: 所有匹配到的文件列表
+            stage1_batch_size: 第一阶段批量分析的每批文件数量
+            risk_threshold: 高危文件风险阈值
+
+        Returns:
+            包含三个阶段完整结果的字典
+        """
+        logger.info(f"开始严格三阶段AI分析，共{len(file_inputs)}个文件")
+        analysis_start_time = asyncio.get_event_loop().time()
+
+        # === 第一阶段：批量风险评估打分 ===
+        logger.info("=== 第一阶段：批量AI风险评估 ===")
+        stage1_results = await self._stage1_batch_risk_scoring(
+            file_inputs, stage1_batch_size
+        )
+
+        # 筛选高危文件（按风险分数排序）
+        high_risk_files = [
+            result
+            for result in stage1_results
+            if result.ai_risk_score >= risk_threshold
+        ]
+        high_risk_files.sort(key=lambda x: x.ai_risk_score, reverse=True)
+
+        logger.info(
+            f"第一阶段完成：{len(file_inputs)}个文件 → {len(high_risk_files)}个高危文件"
+        )
+
+        # === 第二阶段：高危文件详细漏洞分析 ===
+        logger.info("=== 第二阶段：高危文件详细漏洞分析 ===")
+        stage2_results = []
+
+        if high_risk_files:
+            # 获取高危文件的完整输入信息
+            high_risk_inputs = [
+                fi
+                for fi in file_inputs
+                if any(hr.file_path == fi.file_path for hr in high_risk_files)
+            ]
+
+            stage2_results = await self._stage2_detailed_vulnerability_analysis(
+                high_risk_inputs
+            )
+
+        logger.info(f"第二阶段完成：详细分析了{len(stage2_results)}个高危文件")
+
+        # === 第三阶段：CVE知识库增强 + diff生成 ===
+        logger.info("=== 第三阶段：CVE知识库增强和diff生成 ===")
+        stage3_results = []
+
+        if stage2_results:
+            stage3_results = await self._stage3_cve_enhanced_diff_generation(
+                stage2_results
+            )
+
+        logger.info(f"第三阶段完成：生成了{len(stage3_results)}个CVE增强结果")
+
+        # 计算总耗时
+        analysis_end_time = asyncio.get_event_loop().time()
+        total_time = analysis_end_time - analysis_start_time
+
+        # 统计结果
+        total_vulnerabilities = sum(len(r.vulnerabilities) for r in stage3_results)
+        total_cve_links = sum(
+            1
+            for r in stage3_results
+            for v in r.vulnerabilities
+            if hasattr(v, "cve_id") and v.cve_id
+        )
+
+        return {
+            "analysis_type": "strict_three_stage",
+            "stage1_batch_risk_assessment": {
+                "total_files": len(file_inputs),
+                "high_risk_files": len(high_risk_files),
+                "risk_threshold": risk_threshold,
+                "results": stage1_results,
+            },
+            "stage2_detailed_vulnerability_analysis": {
+                "analyzed_files": len(stage2_results),
+                "results": stage2_results,
+            },
+            "stage3_cve_enhanced_diff_generation": {
+                "enhanced_files": len(stage3_results),
+                "results": stage3_results,
+            },
+            "summary": {
+                "total_files_analyzed": len(file_inputs),
+                "high_risk_files_found": len(high_risk_files),
+                "vulnerabilities_discovered": total_vulnerabilities,
+                "cve_references_generated": total_cve_links,
+                "total_analysis_time": total_time,
+                "average_time_per_file": total_time / len(file_inputs)
+                if file_inputs
+                else 0,
+            },
+        }
+
+    async def _stage1_batch_risk_scoring(
+        self, file_inputs: List[FileAnalysisInput], batch_size: int = 10
+    ) -> List[AIAnalysisResult]:
+        """
+        第一阶段：批量风险评估打分
+
+        将所有文件分批次输入AI，每批次包含多个文件的完整信息
+        AI需要对每个文件给出0-100的风险评分
+        """
+        logger.info(f"第一阶段开始：批量风险评估，批次大小={batch_size}")
+
+        all_results = []
+
+        # 分批处理所有文件
+        for i in range(0, len(file_inputs), batch_size):
+            batch = file_inputs[i : i + batch_size]
+            batch_num = i // batch_size + 1
+
+            logger.info(f"处理第{batch_num}批次，包含{len(batch)}个文件")
+
+            try:
+                # 构建专门的第一阶段批量评分提示词
+                prompt = self._build_stage1_batch_scoring_prompt(batch)
+
+                # 调用AI进行批量风险评分
+                response = await self._call_ai_api(prompt)
+
+                # 解析批量评分结果
+                batch_results = self._parse_stage1_scoring_response(response, batch)
+                all_results.extend(batch_results)
+
+                # 避免API限流
+                if i + batch_size < len(file_inputs):
+                    await asyncio.sleep(1)
+
+            except Exception as e:
+                logger.error(f"第一阶段批次{batch_num}失败: {e}")
+                # 降级处理：给予默认分数
+                for file_input in batch:
+                    all_results.append(
+                        AIAnalysisResult(
+                            file_path=file_input.file_path,
+                            ai_risk_score=50.0,  # 默认中等风险
+                            vulnerabilities=[],
+                            fix_suggestions=[],
+                            confidence=0.3,
+                            analysis_reasoning="第一阶段批量评分失败，使用默认分数",
+                            overall_risk="medium",
+                            summary="风险评分阶段异常",
+                            analysis_time=0.0,
+                        )
+                    )
+
+        logger.info(f"第一阶段完成：成功评估{len(all_results)}个文件")
+        return all_results
+
+    def _build_stage1_batch_scoring_prompt(self, batch: List[FileAnalysisInput]) -> str:
+        """构建第一阶段专用的批量风险评分提示词"""
+
+        prompt = """作为资深代码安全专家，请对以下文件进行快速风险评估打分。
+
+你的任务是根据提供的信息为每个文件打0-100分的安全风险评分：
+- 90-100分: 极高风险（存在明显的严重安全漏洞）
+- 70-89分: 高风险（可能存在重要安全问题）  
+- 50-69分: 中等风险（有一定安全隐患）
+- 30-49分: 低风险（安全问题较少）
+- 0-29分: 极低风险（基本无安全问题）
+
+评分依据：
+1. AST静态分析特征（复杂度、危险函数调用等）
+2. Git历史修改模式（特别是fix类型的提交）
+3. 已发现的静态分析安全问题
+4. 代码内容的安全风险模式
+
+"""
+
+        # 添加每个文件的信息
+        for i, file_input in enumerate(batch, 1):
+            fix_commits = self._extract_fix_commits(file_input.git_commits)
+
+            prompt += f"""
+=== 文件{i}: {file_input.file_path} ===
+编程语言: {file_input.language}
+文件大小: {len(file_input.content)} 字符
+
+AST分析特征:
+{json.dumps(file_input.ast_features, indent=2, ensure_ascii=False)}
+
+Git修改历史:
+- 总修改次数: {len(file_input.git_commits)}
+- Fix相关提交: {len(fix_commits)}
+- Fix提交详情: {json.dumps(fix_commits[:3], indent=2, ensure_ascii=False)}
+
+已发现的静态分析问题:
+{json.dumps(file_input.existing_issues, indent=2, ensure_ascii=False)}
+
+代码片段（前1000字符）:
+```{file_input.language}
+{file_input.content[:1000]}{"...(代码过长已截断)" if len(file_input.content) > 1000 else ""}
+```
+
+"""
+
+        prompt += f"""
+请按以下JSON格式输出所有{len(batch)}个文件的风险评分：
+
+{{
+    "batch_risk_scores": [
+        {{
+            "file_path": "文件路径",
+            "risk_score": 85,
+            "confidence": 0.9,
+            "risk_reasoning": "发现SQL注入漏洞模式，且有多次安全修复历史",
+            "risk_level": "high|medium|low"
+        }}
+    ]
+}}
+
+请确保为每个文件提供准确的风险评分和详细的评分理由。"""
+
+        return prompt
+
+    def _parse_stage1_scoring_response(
+        self, response: str, batch: List[FileAnalysisInput]
+    ) -> List[AIAnalysisResult]:
+        """解析第一阶段评分响应"""
+
+        try:
+            # 提取JSON
+            json_start = response.find("{")
+            json_end = response.rfind("}") + 1
+
+            if json_start != -1 and json_end > json_start:
+                data = json.loads(response[json_start:json_end])
+                scores = data.get("batch_risk_scores", [])
+
+                results = []
+                file_path_map = {fi.file_path: fi for fi in batch}
+
+                for score_data in scores:
+                    file_path = score_data.get("file_path", "")
+                    if file_path in file_path_map:
+                        result = AIAnalysisResult(
+                            file_path=file_path,
+                            ai_risk_score=float(score_data.get("risk_score", 50.0)),
+                            vulnerabilities=[],  # 第一阶段不输出具体漏洞
+                            fix_suggestions=[],  # 第一阶段不输出修复建议
+                            confidence=float(score_data.get("confidence", 0.5)),
+                            analysis_reasoning=score_data.get("risk_reasoning", ""),
+                            overall_risk=score_data.get("risk_level", "medium"),
+                            summary="第一阶段风险评分",
+                            analysis_time=0.0,
+                        )
+                        results.append(result)
+
+                # 为没有评分的文件添加默认结果
+                scored_paths = {r.file_path for r in results}
+                for file_input in batch:
+                    if file_input.file_path not in scored_paths:
+                        results.append(
+                            AIAnalysisResult(
+                                file_path=file_input.file_path,
+                                ai_risk_score=40.0,
+                                vulnerabilities=[],
+                                fix_suggestions=[],
+                                confidence=0.3,
+                                analysis_reasoning="未在AI响应中找到评分",
+                                overall_risk="medium",
+                                summary="默认风险评分",
+                                analysis_time=0.0,
+                            )
+                        )
+
+                return results
+
+        except Exception as e:
+            logger.error(f"解析第一阶段评分响应失败: {e}")
+
+        # 降级处理
+        return [
+            AIAnalysisResult(
+                file_path=fi.file_path,
+                ai_risk_score=45.0,
+                vulnerabilities=[],
+                fix_suggestions=[],
+                confidence=0.2,
+                analysis_reasoning="第一阶段响应解析失败",
+                overall_risk="medium",
+                summary="解析失败的默认评分",
+                analysis_time=0.0,
+            )
+            for fi in batch
+        ]
+
+    # 保持现有的第二、三阶段方法，但确保它们的职责更清晰

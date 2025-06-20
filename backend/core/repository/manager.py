@@ -6,7 +6,7 @@
 import os
 import shutil
 import tempfile
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from pathlib import Path
 import git
 from git import Repo
@@ -335,17 +335,154 @@ class RepositoryManager:
             logger.warning(f"获取文件Git历史失败 {file_path}: {e}")
             return []
 
-    def _is_fix_commit(self, message: str) -> bool:
-        """判断是否为修复类型的提交"""
-        fix_keywords = [
-            "fix",
-            "bug",
-            "patch",
-            "repair",
-            "resolve",
-            "correct",
-            "security",
-            "vulnerability",
-        ]
-        message_lower = message.lower()
-        return any(keyword in message_lower for keyword in fix_keywords)
+    def extract_file_git_history(
+        self, repo_path: str, file_path: str
+    ) -> List[Dict[str, Any]]:
+        """
+        提取文件的Git修改历史，特别关注fix相关的提交
+
+        Args:
+            repo_path: 仓库本地路径
+            file_path: 相对于仓库根目录的文件路径
+
+        Returns:
+            包含提交信息的字典列表，重点标记fix相关提交
+        """
+        try:
+            repo = git.Repo(repo_path)
+            commits = list(repo.iter_commits(paths=file_path, max_count=50))
+
+            commit_history = []
+            fix_keywords = [
+                "fix",
+                "patch",
+                "security",
+                "vuln",
+                "bug",
+                "issue",
+                "cve",
+                "vulnerability",
+                "exploit",
+                "attack",
+                "secure",
+                "sanitize",
+                "validate",
+                "escape",
+                "修复",
+                "漏洞",
+                "安全",
+            ]
+
+            for commit in commits:
+                message = commit.message.lower().strip()
+
+                # 检查是否为fix相关提交
+                is_fix = any(keyword in message for keyword in fix_keywords)
+
+                # 获取文件变更统计
+                stats = commit.stats.files.get(
+                    file_path, {"insertions": 0, "deletions": 0, "lines": 0}
+                )
+
+                commit_info = {
+                    "hash": commit.hexsha[:8],  # 短hash更易读
+                    "full_hash": commit.hexsha,
+                    "message": commit.message.strip(),
+                    "summary": commit.summary,  # 提交信息第一行
+                    "author": str(commit.author.name),
+                    "author_email": str(commit.author.email),
+                    "date": commit.committed_datetime.isoformat(),
+                    "timestamp": commit.committed_date,
+                    "is_fix": is_fix,
+                    "insertions": stats.get("insertions", 0),
+                    "deletions": stats.get("deletions", 0),
+                    "total_changes": stats.get("lines", 0),
+                    "matched_keywords": [kw for kw in fix_keywords if kw in message]
+                    if is_fix
+                    else [],
+                }
+
+                commit_history.append(commit_info)
+
+            logger.info(
+                f"提取文件Git历史: {file_path}, 共{len(commit_history)}个提交, {sum(1 for c in commit_history if c['is_fix'])}个fix提交"
+            )
+            return commit_history
+
+        except Exception as e:
+            logger.warning(f"提取Git历史失败 {file_path}: {e}")
+            return []
+
+    def get_repository_git_stats(self, repo_path: str) -> Dict[str, Any]:
+        """
+        获取整个仓库的Git统计信息
+
+        Args:
+            repo_path: 仓库本地路径
+
+        Returns:
+            仓库的整体Git统计信息
+        """
+        try:
+            repo = git.Repo(repo_path)
+
+            # 获取最近的提交
+            recent_commits = list(repo.iter_commits(max_count=100))
+
+            # 统计fix相关提交
+            fix_keywords = ["fix", "patch", "security", "vuln", "bug"]
+            fix_commits = [
+                c
+                for c in recent_commits
+                if any(keyword in c.message.lower() for keyword in fix_keywords)
+            ]
+
+            # 获取活跃贡献者
+            authors = {}
+            for commit in recent_commits:
+                author = str(commit.author.name)
+                authors[author] = authors.get(author, 0) + 1
+
+            # 按月统计提交频率
+            from collections import defaultdict
+            import datetime
+
+            monthly_commits = defaultdict(int)
+            for commit in recent_commits:
+                month_key = datetime.datetime.fromtimestamp(
+                    commit.committed_date
+                ).strftime("%Y-%m")
+                monthly_commits[month_key] += 1
+
+            return {
+                "total_commits": len(recent_commits),
+                "fix_commits": len(fix_commits),
+                "fix_ratio": len(fix_commits) / len(recent_commits)
+                if recent_commits
+                else 0,
+                "active_authors": len(authors),
+                "top_contributors": sorted(
+                    authors.items(), key=lambda x: x[1], reverse=True
+                )[:5],
+                "monthly_activity": dict(monthly_commits),
+                "latest_commit": {
+                    "hash": recent_commits[0].hexsha[:8],
+                    "message": recent_commits[0].summary,
+                    "date": recent_commits[0].committed_datetime.isoformat(),
+                    "author": str(recent_commits[0].author.name),
+                }
+                if recent_commits
+                else None,
+            }
+
+        except Exception as e:
+            logger.error(f"获取仓库Git统计失败: {e}")
+            return {
+                "total_commits": 0,
+                "fix_commits": 0,
+                "fix_ratio": 0,
+                "active_authors": 0,
+                "top_contributors": [],
+                "monthly_activity": {},
+                "latest_commit": None,
+            }
