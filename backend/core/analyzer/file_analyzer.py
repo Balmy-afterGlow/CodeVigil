@@ -13,6 +13,7 @@ from dataclasses import dataclass, asdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 from utils.logger import get_logger
+from core.security_rules import get_security_rule_engine
 
 logger = get_logger(__name__)
 
@@ -333,22 +334,37 @@ class FileAnalyzer:
     def _scan_security_issues(
         self, file_path: str, content: str, language: str
     ) -> List[SecurityIssue]:
-        """安全扫描"""
+        """安全扫描 - 使用规则引擎"""
+        security_engine = get_security_rule_engine()
+        findings = security_engine.analyze_content(content, file_path)
+
+        # 转换格式
         issues = []
+        for finding in findings:
+            issue = SecurityIssue(
+                severity=finding["severity"],
+                rule_id=finding["rule_id"],
+                message=finding["description"],
+                file_path=finding["file_path"],
+                line_number=finding["line_number"],
+                column=0,  # 规则引擎暂不提供列信息
+                code_snippet=finding["matched_text"],
+                cwe_id=finding.get("cwe_id"),
+            )
+            issues.append(issue)
 
-        # Python安全扫描
+        # 保留原有的Python和通用扫描作为补充
         if language == "python":
-            issues.extend(self._scan_python_security(file_path, content))
+            issues.extend(self._scan_python_security_legacy(file_path, content))
 
-        # 通用模式扫描
-        issues.extend(self._scan_common_patterns(file_path, content))
+        issues.extend(self._scan_common_patterns_legacy(file_path, content))
 
         return issues
 
-    def _scan_python_security(
+    def _scan_python_security_legacy(
         self, file_path: str, content: str
     ) -> List[SecurityIssue]:
-        """Python安全扫描"""
+        """Python安全扫描 - 旧版规则作为补充"""
         issues = []
         lines = content.split("\n")
 
@@ -384,9 +400,10 @@ class FileAnalyzer:
 
         return issues
 
-    def _scan_common_patterns(
+    def _scan_common_patterns_legacy(
         self, file_path: str, content: str
     ) -> List[SecurityIssue]:
+        """通用安全模式扫描 - 旧版规则作为补充"""
         """通用安全模式扫描"""
         issues = []
         lines = content.split("\n")

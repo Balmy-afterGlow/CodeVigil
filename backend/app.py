@@ -2,22 +2,36 @@
 CodeVigil主应用入口
 """
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 import uvicorn
 import os
+import logging
+import json
 from dotenv import load_dotenv
 
 from api.routes import api_router
+from api.middleware import setup_middleware
 from core.database import init_db
-from utils.logger import get_logger
+from core.config import get_settings
+from core.task_manager import get_task_manager
+from core.rag.knowledge_base import knowledge_base
+from core.notification import get_notification_manager
 
 # 加载环境变量
 load_dotenv()
 
-logger = get_logger(__name__)
+# 获取配置
+settings = get_settings()
+
+# 配置日志
+logging.basicConfig(
+    level=getattr(logging, settings.log_level),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -25,9 +39,33 @@ async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时初始化
     logger.info("启动CodeVigil应用...")
+
+    # 初始化数据库
     await init_db()
+
+    # 初始化知识库
+    try:
+        knowledge_base.load_default_knowledge()
+        logger.info("知识库初始化完成")
+    except Exception as e:
+        logger.warning(f"知识库初始化失败: {e}")
+
+    # 初始化任务管理器
+    task_manager = get_task_manager(settings)
+    notification_manager = get_notification_manager()
+    logger.info("任务管理器初始化完成")
+
     yield
+
     # 关闭时清理
+    logger.info("正在关闭CodeVigil应用...")
+
+    # 清理旧任务
+    try:
+        cleaned = task_manager.cleanup_old_tasks(days=7)
+        logger.info(f"清理了 {cleaned} 个旧任务")
+    except Exception as e:
+        logger.error(f"清理任务失败: {e}")
     logger.info("关闭CodeVigil应用...")
 
 
@@ -39,14 +77,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS中间件
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 生产环境应限制具体域名
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 设置中间件
+setup_middleware(app)
 
 # 注册路由
 app.include_router(api_router, prefix="/api")
@@ -56,39 +88,122 @@ if os.path.exists("../frontend/build"):
     app.mount("/", StaticFiles(directory="../frontend/build", html=True), name="static")
 
 
+@app.get("/download/{filename}")
+async def download_file(filename: str):
+    """
+    下载生成的报告文件
+    """
+    try:
+        # 检查文件是否存在于报告目录
+        file_path = os.path.join("./data/reports", filename)
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail="文件不存在")
+
+        # 检查文件扩展名是否安全
+        allowed_extensions = [".json", ".html", ".md", ".csv", ".pdf"]
+        if not any(filename.endswith(ext) for ext in allowed_extensions):
+            raise HTTPException(status_code=400, detail="不支持的文件类型")
+
+        return FileResponse(
+            path=file_path, filename=filename, media_type="application/octet-stream"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"下载文件失败: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # WebSocket连接管理
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        self.active_connections: dict[str, WebSocket] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, task_id: str, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections[task_id] = websocket
+        logger.info(f"WebSocket连接建立: {task_id}")
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+    def disconnect(self, task_id: str):
+        if task_id in self.active_connections:
+            del self.active_connections[task_id]
+            logger.info(f"WebSocket连接断开: {task_id}")
 
-    async def send_personal_message(self, message: str, websocket: WebSocket):
-        await websocket.send_text(message)
+    async def send_progress_update(self, task_id: str, progress_data: dict):
+        """发送进度更新"""
+        if task_id in self.active_connections:
+            try:
+                await self.active_connections[task_id].send_text(
+                    json.dumps(progress_data, ensure_ascii=False)
+                )
+            except Exception as e:
+                logger.error(f"发送进度更新失败 {task_id}: {e}")
+                self.disconnect(task_id)
 
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
+    async def broadcast_system_message(self, message: dict):
+        """广播系统消息"""
+        disconnected = []
+        for task_id, connection in self.active_connections.items():
+            try:
+                await connection.send_text(json.dumps(message, ensure_ascii=False))
+            except Exception as e:
+                logger.error(f"广播消息失败 {task_id}: {e}")
+                disconnected.append(task_id)
+
+        # 清理断开的连接
+        for task_id in disconnected:
+            self.disconnect(task_id)
 
 
 manager = ConnectionManager()
 
 
-@app.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: int):
+# 在应用启动时设置通知管理器
+def setup_notification_system():
+    """设置通知系统"""
+    notification_manager = get_notification_manager()
+    notification_manager.set_websocket_manager(manager)
+    return notification_manager
+
+
+# 在lifespan中调用
+notification_manager = setup_notification_system()
+
+
+@app.websocket("/ws/progress/{task_id}")
+async def websocket_progress_endpoint(websocket: WebSocket, task_id: str):
     """WebSocket端点，用于实时进度更新"""
-    await manager.connect(websocket)
+    await manager.connect(task_id, websocket)
     try:
+        # 发送当前任务状态
+        task_mgr = get_task_manager(settings)
+        task = task_mgr.get_task(task_id)
+        if task:
+            await manager.send_progress_update(
+                task_id,
+                {
+                    "type": "progress",
+                    "task_id": task_id,
+                    "status": task.status,
+                    "progress": task.progress,
+                    "current_step": task.current_step,
+                    "message": task.message,
+                },
+            )
+
+        # 保持连接
         while True:
             data = await websocket.receive_text()
-            await manager.send_personal_message(f"Message: {data}", websocket)
+            # 处理客户端消息（如心跳包）
+            try:
+                message = json.loads(data)
+                if message.get("type") == "ping":
+                    await websocket.send_text(json.dumps({"type": "pong"}))
+            except json.JSONDecodeError:
+                pass
+
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        manager.disconnect(task_id)
 
 
 @app.get("/health")
