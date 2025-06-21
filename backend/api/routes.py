@@ -14,9 +14,8 @@ from models.response_models import AnalysisResponse, ProgressResponse
 from core.repository.manager import RepositoryManager
 from core.analyzer.file_analyzer import FileAnalyzer
 from core.ai.analyzer import AIAnalyzer
+from core.ai.analyzer import FileAnalysisInput
 from core.task_manager import get_task_manager
-from core.rag.knowledge_base import knowledge_base
-from core.rag.query_engine import rag_query_engine
 from core.report_generator import ReportGenerator
 from core.config import get_settings
 from utils.logger import get_logger
@@ -149,27 +148,6 @@ async def export_results(task_id: str, format: str):
         raise
     except Exception as e:
         logger.error(f"导出结果失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@api_router.post("/knowledge/query")
-async def query_knowledge_base(query: str):
-    """
-    查询RAG知识库
-    """
-    try:
-        if not query.strip():
-            raise HTTPException(status_code=400, detail="查询内容不能为空")
-
-        try:
-            results = rag_query_engine.query(query)
-        except Exception as e:
-            logger.warning(f"RAG查询失败: {e}")
-            results = "查询服务暂不可用"
-
-        return {"query": query, "results": results, "timestamp": time.time()}
-    except Exception as e:
-        logger.error(f"知识库查询失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -413,25 +391,21 @@ async def run_analysis_pipeline(
         task_manager.create_task(task_id, "repository_analysis")
         task_manager.update_task_progress(task_id, 10, "正在克隆仓库...")
 
-        # 1. 克隆仓库
+        # 克隆仓库
         repo_info = await repo_manager.clone_repository(repo_url, branch)
         task_manager.update_task_progress(task_id, 30, "正在分析文件...")
 
-        # 2. 文件分析
+        # 文件分析
         file_results = await file_analyzer.analyze_files_batch(
             repo_info.local_path, repo_info.filtered_files
         )
+
+        # 获取高风险文件
         task_manager.update_task_progress(task_id, 50, "正在筛选高风险文件...")
-
-        # 3. 获取高风险文件
         top_risk_files = file_analyzer.get_top_risk_files(file_results, 20)
-        task_manager.update_task_progress(task_id, 70, "正在进行AI深度分析...")
 
-        # 4. AI深度分析 - 使用新的批量分析
         task_manager.update_task_progress(task_id, 70, "正在进行AI深度分析...")
-
         # 准备AI分析输入 - 包含完整的Git历史分析
-        from core.ai.analyzer import FileAnalysisInput
 
         ai_inputs = []
 
@@ -486,26 +460,9 @@ async def run_analysis_pipeline(
                 "stage2_detailed_vulnerability_analysis", {}
             ).get("results", [])
 
-        # 5. RAG增强分析 - 获取相关安全建议
-        task_manager.update_task_progress(task_id, 85, "正在生成安全建议...")
-
-        # 对每个AI分析结果添加RAG建议
-        for ai_result in ai_results:
-            if ai_result.vulnerabilities:
-                for vuln in ai_result.vulnerabilities:
-                    # 查询相关的安全知识
-                    try:
-                        rag_suggestions = rag_query_engine.query(
-                            f"如何修复 {vuln.get('type', '')} 类型的安全漏洞: {vuln.get('description', '')}"
-                        )
-                        vuln["rag_suggestions"] = rag_suggestions
-                    except Exception as e:
-                        logger.warning(f"RAG查询失败: {e}")
-                        vuln["rag_suggestions"] = "暂无相关建议"
-
         task_manager.update_task_progress(task_id, 95, "正在保存结果...")
 
-        # 6. 保存结果 - 包含完整的三阶段分析信息
+        # 保存结果 - 包含完整的三阶段分析信息
         final_results = {
             "task_id": task_id,
             "repository_info": asdict(repo_info),
@@ -554,121 +511,3 @@ async def run_analysis_pipeline(
     except Exception as e:
         logger.error(f"分析任务失败 {task_id}: {e}")
         task_manager.fail_task(task_id, str(e))
-
-
-@api_router.post("/generate-cve-enhanced-diff")
-async def generate_cve_enhanced_diff(vulnerability_info: Dict[str, Any]):
-    """
-    基于漏洞信息和CVE知识库生成增强的修复diff
-    """
-    try:
-        # 初始化CVE知识库
-        from ..core.cve_knowledge_base import CVEFixesKnowledgeBase
-
-        cve_kb = CVEFixesKnowledgeBase()
-
-        # 提取漏洞信息
-        vuln_description = vulnerability_info.get("description", "")
-        code_snippet = vulnerability_info.get("code_snippet", "")
-        file_path = vulnerability_info.get("file_path", "")
-        language = vulnerability_info.get("language", "")
-
-        # 生成CVE上下文
-        cve_context = cve_kb.generate_diff_context_for_ai(
-            vulnerability_description=vuln_description,
-            code_snippet=code_snippet,
-            language=language,
-            limit=3,
-        )
-
-        # 搜索相关CVE
-        similar_cves = cve_kb.search_similar_vulnerabilities(
-            vulnerability_description=vuln_description,
-            code_snippet=code_snippet,
-            language=language,
-            limit=5,
-        )
-
-        return {
-            "status": "success",
-            "cve_context": cve_context,
-            "similar_cves": similar_cves,
-            "file_path": file_path,
-            "recommendations": "基于CVE知识库的修复建议已生成",
-        }
-
-    except Exception as e:
-        logger.error(f"生成CVE增强diff失败: {e}")
-        return {"status": "error", "message": str(e)}
-
-
-@api_router.post("/ai-enhanced-analysis")
-async def ai_enhanced_analysis(analysis_request: Dict[str, Any]):
-    """
-    AI增强分析：在初次AI分析后，结合CVE知识库进行二次分析
-    用于生成更精确的diff和CVE关联
-    """
-    try:
-        # 获取初次分析结果
-        vulnerabilities = analysis_request.get("vulnerabilities", [])
-        file_path = analysis_request.get("file_path", "")
-
-        if not vulnerabilities:
-            return {"status": "error", "message": "未提供漏洞信息"}
-
-        # 初始化AI分析器和CVE知识库
-        from ..core.ai.analyzer import AIAnalyzer
-        from ..core.cve_knowledge_base import CVEFixesKnowledgeBase
-
-        ai_analyzer = AIAnalyzer()
-        cve_kb = CVEFixesKnowledgeBase()
-
-        enhanced_results = []
-
-        for vuln in vulnerabilities:
-            try:
-                # 为每个漏洞生成CVE上下文
-                cve_context = cve_kb.generate_diff_context_for_ai(
-                    vulnerability_description=vuln.get("description", ""),
-                    code_snippet=vuln.get("code_snippet", ""),
-                    language=ai_analyzer._extract_language_from_path(file_path),
-                )
-
-                # 搜索相关CVE
-                similar_cves = cve_kb.search_similar_vulnerabilities(
-                    vulnerability_description=vuln.get("description", ""),
-                    code_snippet=vuln.get("code_snippet", ""),
-                    language=ai_analyzer._extract_language_from_path(file_path),
-                    limit=3,
-                )
-
-                # 使用AI生成增强的修复建议
-                enhanced_remediation = await ai_analyzer._generate_enhanced_remediation(
-                    vuln, similar_cves, file_path
-                )
-
-                enhanced_vuln = vuln.copy()
-                enhanced_vuln.update(
-                    {
-                        "cve_context": cve_context,
-                        "related_cves": similar_cves,
-                        "enhanced_remediation": enhanced_remediation,
-                    }
-                )
-
-                enhanced_results.append(enhanced_vuln)
-
-            except Exception as e:
-                logger.warning(f"增强分析失败 {vuln.get('title', 'Unknown')}: {e}")
-                enhanced_results.append(vuln)
-
-        return {
-            "status": "success",
-            "file_path": file_path,
-            "enhanced_vulnerabilities": enhanced_results,
-            "summary": f"成功增强分析了 {len(enhanced_results)} 个漏洞",
-        }
-
-    except Exception as e:
-        logger.error(f"AI增强分析失败: {e}")
-        return {"status": "error", "message": str(e)}
