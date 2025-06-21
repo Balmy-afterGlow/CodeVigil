@@ -51,95 +51,541 @@ CVE数据库包含丰富的漏洞信息，但现有应用主要局限于：
 
 ### 2.1 功能需求分析
 
-**F1 - 代码仓库分析**
-- 支持GitHub仓库URL输入
-- 自动克隆和文件筛选
-- 支持多种编程语言（Python、JavaScript、Java、C/C++等）
+#### 2.1.1 核心功能需求
 
-**F2 - 智能漏洞检测**
-- 三阶段AI分析流水线
-- AST静态分析集成
-- Git历史修复模式挖掘
+**F1 - 代码仓库获取与预处理**
 
-**F3 - CVE知识库增强**
-- 基于CVEfixes数据集的相似案例检索
-- 历史修复模式学习
-- 智能diff生成
+系统首先需要从GitHub等代码托管平台获取目标仓库，并进行初步的文件筛选和预处理：
 
-**F4 - 报告生成与导出**
-- 多格式报告支持（PDF、HTML、JSON）
-- 风险热力图可视化
-- 修复优先级排序
+- **仓库克隆**: 支持GitHub、GitLab等平台的仓库URL输入，自动执行`git clone`操作
+- **智能文件过滤**: 基于自定义ignore规则筛选源码文件，排除二进制文件、依赖库、构建产物等无关文件
+- **多语言识别**: 支持Python、JavaScript、TypeScript、Java、C/C++、Go、PHP、Ruby等主流编程语言
+- **文件元信息提取**: 获取文件大小、修改时间、编程语言类型等基础信息
+
+根据`manager.py`的实现，系统定义了详细的文件过滤规则：
+
+```python
+# 忽略的文件类型和目录
+ignore_patterns = [
+    "*.pyc", "*.pyo", "*.pyd", "__pycache__",  # Python编译文件
+    "*.so", "*.dylib", "*.dll",                # 动态链接库
+    "*.jpg", "*.png", "*.gif", "*.ico",        # 图像文件
+    "*.mp4", "*.mp3", "*.wav",                 # 多媒体文件
+    "*.zip", "*.tar", "*.gz", "*.rar",         # 压缩文件
+    "node_modules", ".git", "venv", "build"    # 依赖和构建目录
+]
+
+# 支持的编程语言扩展名
+language_extensions = {
+    "Python": [".py", ".pyw", ".pyx"],
+    "JavaScript": [".js", ".jsx", ".mjs"],
+    "TypeScript": [".ts", ".tsx"],
+    "Java": [".java"],
+    "C++": [".cpp", ".cxx", ".hpp"],
+    "Go": [".go"],
+    "PHP": [".php"],
+    # ...更多语言支持
+}
+```
+
+**F2 - 静态分析与风险初筛**
+
+在获得过滤后的源码文件后，系统进行第一轮风险评估，目标是从数千个文件中筛选出数十个潜在高危文件：
+
+- **AST语法树分析**: 使用Python的`ast`模块解析源码，提取函数数量、类数量、循环复杂度、危险函数调用等特征
+- **安全模式匹配**: 检测已知的危险模式，如`eval()`、`exec()`、`os.system()`等高风险函数调用
+- **Git历史挖掘**: 分析文件的提交历史，特别关注包含"fix"、"security"、"vulnerability"等关键字的提交
+- **综合风险评分**: 结合静态分析结果、代码复杂度、Git修改频率等多个维度计算风险评分
+
+根据`file_analyzer.py`的实现，风险评分算法为：
+
+```python
+# 风险评分权重配置
+risk_weights = {
+    "security_issues": 0.4,    # 静态分析发现的安全问题
+    "complexity": 0.2,         # 代码复杂度
+    "git_changes": 0.2,        # Git修改频率  
+    "fix_commits": 0.2,        # fix类型提交数量
+}
+
+# 综合风险评分计算
+risk_score = (
+    security_score * risk_weights["security_issues"] +
+    complexity_score * risk_weights["complexity"] + 
+    git_score * risk_weights["git_changes"] +
+    fix_score * risk_weights["fix_commits"]
+)
+```
+
+**F3 - 三阶段智能AI分析**
+
+对筛选出的高危文件进行三轮渐进式AI分析：
+
+**第一阶段 - 批量风险评分**：
+- 将文件分批次（每批10个）输入AI模型进行快速风险评估
+- AI基于代码内容、AST特征、Git历史给出0-100分的风险评分
+- 批量处理显著降低API调用成本和分析时间
+
+**第二阶段 - 详细漏洞分析**：
+- 对风险评分超过阈值（默认70分）的文件进行逐个深度分析
+- AI输出结构化的漏洞信息：漏洞类型、严重程度、影响描述、代码位置
+- 提供初步的修复建议和代码修改指导
+
+**第三阶段 - CVE知识库增强**：
+- 使用第二阶段识别的漏洞描述检索CVEfixes向量数据库
+- 匹配相似的历史CVE修复案例作为RAG上下文
+- AI结合历史修复模式生成精确的代码diff和CVE关联链接
+
+根据`analyzer.py`的实现，AI分析流程采用严格的三阶段设计：
+
+```python
+async def analyze_files_strict_three_stage(self, file_inputs, stage1_batch_size=10, risk_threshold=70.0):
+    # 第一阶段：批量风险评分
+    stage1_results = await self._stage1_batch_risk_scoring(file_inputs, stage1_batch_size)
+    
+    # 筛选高危文件
+    high_risk_files = [r for r in stage1_results if r.ai_risk_score >= risk_threshold]
+    
+    # 第二阶段：详细漏洞分析
+    stage2_results = await self._stage2_detailed_vulnerability_analysis(high_risk_files)
+    
+    # 第三阶段：CVE增强和diff生成
+    stage3_results = await self._stage3_cve_enhanced_diff_generation(stage2_results)
+    
+    return {"stage1": stage1_results, "stage2": stage2_results, "stage3": stage3_results}
+```
+
+**F4 - 实时进度展示与交互**
+
+- **WebSocket实时通信**: 前端通过WebSocket连接实时接收分析进度更新
+- **分阶段进度显示**: 清晰展示仓库克隆、文件分析、AI分析各阶段的进度
+- **风险热力图**: 以可视化方式展示文件级别的安全风险分布
+- **交互式结果浏览**: 支持按风险等级、漏洞类型筛选和排序查看结果
+
+**F5 - 多格式报告生成**
+
+- **技术详细报告**: 面向开发者的详细技术报告，包含漏洞详情、修复代码、验证方法
+- **管理层摘要报告**: 面向决策者的高层次风险评估和优先级建议
+- **多格式导出**: 支持PDF、HTML、JSON、CSV等多种格式导出
+- **CVE关联报告**: 自动关联相关CVE编号，提供历史参考案例
+
+#### 2.1.2 非功能需求
+
+**N1 - 性能要求**
+- 支持大型代码仓库分析（10,000+文件）
+- 通过分层筛选将AI分析文件数量控制在合理范围（20-50个）
+- 总分析时间控制在30分钟以内（中型项目）
+
+**N2 - 可用性要求**
+- 直观的Web界面，支持一键式分析启动
+- 实时进度反馈，避免用户等待焦虑
+- 清晰的风险等级划分和优先级指导
+
+**N3 - 可扩展性要求**
+- 模块化架构支持新编程语言扩展
+- 插件化安全规则引擎支持自定义规则
+- 标准化API接口支持第三方工具集成
 
 ### 2.2 系统架构设计
 
 #### 2.2.1 总体架构
 
-本系统采用前后端分离的架构，主要包括以下组件：
+本系统采用前后端分离的微服务架构，通过分层设计实现高内聚低耦合。整体架构如下：
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    前端展示层 (React)                        │
-├─────────────────────────────────────────────────────────────┤
-│                    API网关层 (FastAPI)                       │
-├─────────────────────────────────────────────────────────────┤
-│  核心业务层                                                   │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐              │
-│  │ 仓库管理模块 │ │ 文件分析模块 │ │ AI分析模块  │              │
-│  └─────────────┘ └─────────────┘ └─────────────┘              │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐              │
-│  │ CVE知识库   │ │ 报告生成模块 │ │ 任务管理模块 │              │
-│  └─────────────┘ └─────────────┘ └─────────────┘              │
-├─────────────────────────────────────────────────────────────┤
-│                    数据存储层                                 │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐              │
-│  │ SQLite数据库│ │ CVE知识库   │ │ 文件系统     │              │
-│  └─────────────┘ └─────────────┘ └─────────────┘              │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph "前端展示层"
+        A[React Web界面]
+        B[进度追踪组件]
+        C[结果可视化]
+        D[报告导出]
+    end
+    
+    subgraph "API网关层"
+        E[FastAPI路由]
+        F[WebSocket服务]
+        G[中间件处理]
+    end
+    
+    subgraph "核心业务层"
+        H[仓库管理模块]
+        I[文件分析模块]
+        J[AI分析模块]
+        K[CVE知识库模块]
+        L[报告生成模块]
+        M[任务管理模块]
+    end
+    
+    subgraph "数据存储层"
+        N[SQLite数据库]
+        O[CVE向量数据库]
+        P[文件系统存储]
+        Q[缓存Redis]
+    end
+    
+    A --> E
+    B --> F
+    C --> E
+    D --> E
+    
+    E --> H
+    E --> I
+    E --> J
+    F --> M
+    
+    H --> P
+    I --> N
+    J --> K
+    K --> O
+    L --> P
+    M --> Q
+    
+    H -.-> I
+    I -.-> J
+    J -.-> K
+    K -.-> L
 ```
 
-#### 2.2.2 核心模块设计
+#### 2.2.2 数据流架构
+
+系统的数据处理流程采用渐进式筛选策略，逐步缩小分析范围：
+
+```mermaid
+flowchart LR
+    A[GitHub仓库<br/>数千个文件] --> B[文件过滤<br/>去除无关文件]
+    B --> C[静态分析<br/>数百个源码文件]
+    C --> D[风险评分<br/>数十个高危文件]
+    D --> E[AI批量评分<br/>10-20个最高危文件]
+    E --> F[AI详细分析<br/>漏洞识别]
+    F --> G[CVE增强<br/>修复建议]
+    G --> H[最终报告]
+    
+    style A fill:#ffebee
+    style D fill:#fff3e0
+    style E fill:#e8f5e8
+    style H fill:#e3f2fd
+```
+
+#### 2.2.3 核心模块设计
+
+根据`backend/core/`目录结构，系统包含以下核心模块：
 
 **仓库管理模块 (Repository Manager)**
-- 负责GitHub仓库的克隆和更新
-- 实现文件类型过滤和大小限制
-- 提供临时目录管理功能
+
+位置：`backend/core/repository/manager.py`
+
+主要功能：
+- **Git仓库克隆**: 支持深度克隆控制和分支选择
+- **智能文件过滤**: 实现多层过滤策略，支持40+种文件类型忽略
+- **语言识别**: 自动识别12种主流编程语言
+- **临时目录管理**: 自动清理和空间管理
+
+关键特性：
+```python
+class RepositoryManager:
+    # 支持40+种文件类型的智能过滤
+    ignore_patterns = ["*.pyc", "node_modules", "*.min.js", ...]
+    
+    # 12种编程语言识别
+    language_extensions = {
+        "Python": [".py", ".pyw", ".pyx"],
+        "JavaScript": [".js", ".jsx", ".mjs"],
+        # ...更多语言
+    }
+    
+    async def clone_repository(self, repo_url, branch=None, depth=100):
+        # 执行智能克隆和过滤
+```
 
 **文件分析模块 (File Analyzer)**
-- 实现增强型AST语法树分析
-- 集成多种静态分析工具
-- 提供Git历史挖掘功能
+
+位置：`backend/core/analyzer/file_analyzer.py`
+
+主要功能：
+- **增强型AST分析**: 深度解析语法树，提取安全相关特征
+- **并行文件处理**: 使用ThreadPoolExecutor实现多线程分析
+- **Git历史挖掘**: 提取修复类提交和安全相关变更
+- **综合风险评分**: 四维度加权评分算法
+
+关键算法：
+```python
+class FileAnalyzer:
+    # 四维度风险评分权重
+    risk_weights = {
+        "security_issues": 0.4,  # 安全问题权重最高
+        "complexity": 0.2,       # 代码复杂度
+        "git_changes": 0.2,      # Git修改频率
+        "fix_commits": 0.2,      # 修复提交数量
+    }
+    
+    def _calculate_risk_score(self, security_issues, complexity, git_changes, fix_commits):
+        # 综合评分算法实现
+```
 
 **AI分析模块 (AI Analyzer)**
-- 实现三阶段分析流水线
-- 集成大语言模型API
-- 提供结构化漏洞信息输出
+
+位置：`backend/core/ai/analyzer.py`
+
+主要功能：
+- **严格三阶段分析**: 批量评分→详细分析→CVE增强
+- **智能提示词工程**: 针对不同阶段优化的Prompt设计
+- **结构化输出解析**: JSON格式的漏洞信息和修复建议
+- **API调用优化**: 批量处理和错误恢复机制
+
+核心流程：
+```python
+class AIAnalyzer:
+    async def analyze_files_strict_three_stage(self, file_inputs):
+        # 第一阶段：批量风险评分 (10文件/批次)
+        stage1_results = await self._stage1_batch_risk_scoring(file_inputs, batch_size=10)
+        
+        # 第二阶段：详细漏洞分析 (逐个文件)
+        high_risk_files = [r for r in stage1_results if r.ai_risk_score >= 70.0]
+        stage2_results = await self._stage2_detailed_vulnerability_analysis(high_risk_files)
+        
+        # 第三阶段：CVE增强和diff生成
+        stage3_results = await self._stage3_cve_enhanced_diff_generation(stage2_results)
+```
 
 **CVE知识库模块 (CVE Knowledge Base)**
-- 基于CVEfixes数据集构建
-- 实现语义相似度检索
-- 提供修复模式提取功能
+
+位置：`backend/core/rag/cve_knowledge_base.py`
+
+主要功能：
+- **向量数据库构建**: 基于50GB CVEfixes数据集
+- **语义相似度检索**: 使用Sentence-Transformers进行相似案例匹配
+- **修复模式提取**: 从历史修复中学习通用模式
+- **上下文生成**: 为AI提供结构化的CVE修复案例
+
+**报告生成模块 (Report Generator)**
+
+位置：`backend/core/report_generator.py`
+
+主要功能：
+- **多格式输出**: 支持PDF、HTML、JSON、Markdown格式
+- **模板化生成**: 基于Jinja2模板引擎
+- **风险分级展示**: 按严重程度分类展示漏洞
+- **修复优先级排序**: 基于CVSS评分和业务影响
+
+**任务管理模块 (Task Manager)**
+
+位置：`backend/core/task_manager.py`
+
+主要功能：
+- **异步任务调度**: 支持长时间运行的分析任务
+- **进度跟踪**: 实时更新分析进度状态
+- **错误恢复**: 任务失败自动重试机制
+- **资源管理**: 并发任务数量控制
+
+#### 2.2.4 模块间交互设计
+
+```mermaid
+sequenceDiagram
+    participant U as 用户界面
+    participant A as API网关
+    participant R as 仓库管理
+    participant F as 文件分析
+    participant AI as AI分析
+    participant C as CVE知识库
+    participant T as 任务管理
+    
+    U->>A: 提交仓库URL
+    A->>T: 创建分析任务
+    T->>R: 克隆仓库
+    R-->>T: 返回文件列表
+    T->>F: 执行静态分析
+    F-->>T: 返回高危文件
+    T->>AI: 执行三阶段AI分析
+    AI->>C: 检索CVE案例
+    C-->>AI: 返回相似案例
+    AI-->>T: 返回最终结果
+    T-->>U: 实时进度更新
+```
 
 ### 2.3 关键技术选型
 
 #### 2.3.1 后端技术栈
 
-- **Web框架**: FastAPI - 高性能异步框架，支持自动API文档生成
-- **AI模型**: DeepSeek-Chat - 快速响应模型
-- **数据库**: SQLite - 轻量级嵌入式数据库，适合知识库存储
-- **静态分析**: Python AST + 自定义安全规则引擎
+**Web框架与API服务**
+- **FastAPI 0.100.0+**: 高性能异步Python Web框架
+  - 自动生成OpenAPI文档
+  - 原生支持异步/await操作
+  - 内置数据验证和序列化
+  - 优秀的WebSocket支持
+- **Uvicorn 0.22.0+**: ASGI服务器，提供高并发能力
+- **Pydantic 2.0+**: 数据验证和设置管理库
+
+**AI模型集成**
+- **OpenAI 1.0.0+**: 统一的AI模型接口，兼容DeepSeek API
+- **DeepSeek-Coder**: 专业的代码理解和生成模型
+  - 支持多种编程语言
+  - 优秀的代码上下文理解能力
+  - 相对较低的API调用成本
+
+**静态分析引擎**
+- **Python AST**: 内置语法树分析模块
+  - 深度代码结构解析
+  - 函数调用图构建
+  - 复杂度计算
+- **Bandit 1.7.5+**: Python安全漏洞检测工具
+- **Semgrep 1.30.0+**: 多语言静态分析工具
+  - 支持自定义安全规则
+  - 高精度模式匹配
+
+**版本控制处理**
+- **GitPython 3.1.0+**: Git仓库操作库
+  - 仓库克隆和更新
+  - 提交历史分析
+  - 文件变更跟踪
+
+**数据处理与机器学习**
+- **Sentence-Transformers 2.2.2+**: 语义相似度计算
+  - CVE案例匹配
+  - 文本向量化
+  - 高效的相似度检索
+- **FAISS-CPU 1.7.4+**: 向量数据库，用于快速相似度搜索
+- **NumPy 1.24.0+ & Pandas 2.0.0+**: 数据处理和分析
+- **Scikit-learn 1.3.0+**: 机器学习算法支持
+
+**数据库与存储**
+- **SQLAlchemy 2.0.0+**: ORM框架
+- **SQLite**: 轻量级嵌入式数据库
+  - 无需额外服务器配置
+  - 适合中小型项目
+  - 支持全文搜索
+- **Redis 4.5.0+**: 缓存和会话存储
+- **aiofiles 23.1.0+**: 异步文件操作
+
+**报告生成**
+- **WeasyPrint 59.0+**: HTML到PDF转换
+- **Markdown2 2.4.0+**: Markdown渲染
+- **Jinja2**: 模板引擎（通过FastAPI集成）
+
+**任务队列与异步处理**
+- **Celery 5.3.0+**: 分布式任务队列
+  - 支持长时间运行的分析任务
+  - 任务进度跟踪
+  - 错误恢复机制
 
 #### 2.3.2 前端技术栈
 
-- **框架**: React + TypeScript - 现代化组件开发
-- **状态管理**: React Hooks - 简化状态管理
-- **UI组件**: 自定义组件库 - 保证一致性和可维护性
-- **实时通信**: WebSocket - 支持进度实时更新
+**核心框架**
+- **React 18.2.0**: 现代化前端框架
+  - 组件化开发
+  - 优秀的性能和生态
+  - 强大的社区支持
+- **TypeScript**: 类型安全的JavaScript
+  - 编译时错误检查
+  - 更好的代码提示和重构
+  - 提升代码可维护性
+
+**UI组件与样式**
+- **TailwindCSS 3.3.0**: 实用优先的CSS框架
+  - 快速原型开发
+  - 一致的设计系统
+  - 响应式设计支持
+- **Headless UI 1.7.0**: 无样式组件库
+- **Heroicons 2.0.0**: 高质量图标库
+- **Framer Motion 10.12.0**: 动画库
+
+**数据可视化**
+- **Chart.js 4.3.0 + React-Chartjs-2 5.2.0**: 图表组件
+  - 风险热力图
+  - 统计图表
+  - 进度可视化
+
+**状态管理与数据获取**
+- **React Query 3.39.0**: 服务器状态管理
+  - 自动缓存和同步
+  - 后台更新
+  - 错误处理
+- **React Hooks**: 内置状态管理
+
+**实用工具库**
+- **Axios 1.4.0**: HTTP客户端
+- **React Router DOM 6.14.0**: 客户端路由
+- **React Hot Toast 2.4.0**: 通知提示
+- **React Markdown 8.0.7**: Markdown渲染
+- **React Syntax Highlighter 15.5.0**: 代码高亮
+- **File-saver 2.0.5**: 文件下载
+- **JSZip 3.10.0**: 文件压缩
 
 #### 2.3.3 数据处理技术
 
-- **向量化**: Sentence-Transformers - 用于CVE语义检索
-- **数据存储**: JSON + SQLite - 结构化和非结构化数据混合存储
+**向量化与语义检索**
+- **Sentence-Transformers**: 
+  - 模型: `all-MiniLM-L6-v2`
+  - 支持多语言语义理解
+  - 高效的文本向量化
+- **FAISS**: Facebook开源的向量检索库
+  - 支持大规模向量检索
+  - 多种索引算法
+  - 内存和磁盘混合存储
+
+**数据存储策略**
+- **混合存储**: JSON + SQLite
+  - 结构化数据使用SQLite
+  - 非结构化数据使用JSON
+  - 向量数据使用FAISS索引
+- **缓存策略**: Redis + 内存缓存
+  - 热点数据内存缓存
+  - 会话数据Redis存储
+  - 分析结果临时缓存
+
+**文本处理**
+- **正则表达式**: 代码模式匹配
+- **AST解析**: 深度语法分析
+- **自然语言处理**: 
+  - 关键字提取
+  - 语义相似度计算
+  - 文本分类
+
+#### 2.3.4 开发与部署工具
+
+**开发环境**
+- **Python 3.8+**: 后端开发语言
+- **Node.js 16+**: 前端开发环境
+- **Poetry/pip**: Python依赖管理
+- **npm/yarn**: Node.js依赖管理
+
+**代码质量**
+- **Black 23.0.0+**: Python代码格式化
+- **Flake8 6.0.0+**: Python代码检查
+- **isort 5.12.0+**: Python导入排序
+- **ESLint**: JavaScript/TypeScript代码检查
+- **Prettier**: 代码格式化
+
+**测试框架**
+- **Pytest 7.4.0+**: Python单元测试
+- **Pytest-asyncio 0.21.0+**: 异步测试支持
+- **React Testing Library**: 前端组件测试
+
+**容器化与部署**
+- **Docker**: 容器化部署
+- **Docker Compose**: 多服务编排
+- **Nginx**: 反向代理和静态文件服务
+
+#### 2.3.5 技术选型原则
+
+**性能优先**: 
+- 异步处理框架提升并发能力
+- 向量数据库实现快速检索
+- 缓存策略减少重复计算
+
+**可扩展性**: 
+- 模块化架构支持功能扩展
+- 插件化设计支持自定义规则
+- 微服务架构支持水平扩展
+
+**开发效率**: 
+- 类型安全的开发语言
+- 自动化工具链
+- 丰富的开源生态
+
+**成本控制**: 
+- 开源技术栈降低许可成本
+- 批量处理降低AI API成本
+- 本地部署减少云服务依赖
 
 ## 3. 算法设计与创新
 
@@ -187,6 +633,7 @@ def stage1_batch_risk_scoring(file_inputs, batch_size=10):
 **目标**: 对高危文件进行深入的漏洞分析
 
 **输入**:
+
 - 完整的源代码内容
 - 详细的AST分析结果
 - Git修复历史详情
@@ -213,6 +660,7 @@ def stage2_detailed_analysis(high_risk_files):
 ```
 
 **创新点**:
+
 - 上下文感知的漏洞分析
 - 结构化漏洞信息输出
 - 置信度评估机制
@@ -758,112 +1206,6 @@ services:
 ```
 
 ## 5. 实验验证
-
-### 5.1 实验设计
-
-#### 5.1.1 实验目标
-
-本实验旨在验证CodeVigil系统在以下方面的性能：
-1. 漏洞检测准确率和召回率
-2. 误报率控制效果
-3. 修复建议质量评估
-4. 系统响应时间和吞吐量
-
-#### 5.1.2 实验数据集
-
-**开源项目数据集**:
-选择10个知名开源项目作为测试对象：
-- Django (Python Web框架)
-- Express.js (Node.js Web框架)
-- Spring Boot (Java企业级框架)
-- Laravel (PHP Web框架)
-- Flask (Python微框架)
-- Vue.js (JavaScript前端框架)
-- TensorFlow (机器学习库)
-- Nginx (Web服务器)
-- Redis (缓存数据库)
-- PostgreSQL (关系型数据库)
-
-**真实漏洞数据集**:
-从CVE数据库中选择100个已知漏洞案例，涵盖：
-- SQL注入 (20个)
-- XSS攻击 (15个) 
-- 命令注入 (15个)
-- 路径遍历 (10个)
-- 反序列化漏洞 (10个)
-- 权限绕过 (15个)
-- 其他类型 (15个)
-
-#### 5.1.3 对比基准
-
-选择以下工具作为对比基准：
-- **SonarQube**: 商业静态分析工具
-- **Bandit**: Python安全扫描器
-- **ESLint Security**: JavaScript安全插件
-- **SpotBugs**: Java静态分析工具
-- **Semgrep**: 多语言静态分析工具
-
-### 5.2 实验结果
-
-#### 5.2.1 漏洞检测性能
-
-**准确率对比**:
-
-| 工具 | 准确率 | 召回率 | F1-Score | 误报率 |
-|------|--------|--------|----------|--------|
-| CodeVigil | 87.3% | 82.1% | 84.6% | 12.7% |
-| SonarQube | 73.5% | 78.9% | 76.1% | 26.5% |
-| Bandit | 69.2% | 71.4% | 70.3% | 30.8% |
-| Semgrep | 75.8% | 74.2% | 75.0% | 24.2% |
-
-**漏洞类型检测效果**:
-
-| 漏洞类型 | CodeVigil | SonarQube | 提升幅度 |
-|----------|-----------|-----------|----------|
-| SQL注入 | 91.2% | 76.8% | +18.8% |
-| XSS攻击 | 88.7% | 71.3% | +24.4% |
-| 命令注入 | 85.9% | 69.5% | +23.6% |
-| 路径遍历 | 82.3% | 74.1% | +11.1% |
-| 反序列化 | 89.1% | 68.9% | +29.3% |
-
-#### 5.2.2 修复建议质量评估
-
-通过人工评估100个修复建议的质量：
-
-**评估维度**:
-- **可理解性**: 建议是否清晰易懂
-- **可操作性**: 建议是否具体可执行
-- **正确性**: 修复方案是否正确有效
-- **完整性**: 是否提供完整的修复信息
-
-**评估结果**:
-
-| 评估维度 | CodeVigil | 传统工具平均 | 改进程度 |
-|----------|-----------|--------------|----------|
-| 可理解性 | 4.3/5.0 | 3.1/5.0 | +38.7% |
-| 可操作性 | 4.1/5.0 | 2.8/5.0 | +46.4% |
-| 正确性 | 4.2/5.0 | 3.2/5.0 | +31.3% |
-| 完整性 | 4.0/5.0 | 2.9/5.0 | +37.9% |
-
-#### 5.2.3 系统性能测试
-
-**响应时间测试**:
-
-| 项目规模 | 文件数量 | 分析时间 | 内存使用 |
-|----------|----------|----------|----------|
-| 小型项目 | <100 | 2.3分钟 | 512MB |
-| 中型项目 | 100-1000 | 8.7分钟 | 1.2GB |
-| 大型项目 | 1000-5000 | 23.5分钟 | 2.8GB |
-| 超大项目 | >5000 | 48.2分钟 | 4.1GB |
-
-**并发性能测试**:
-
-| 并发用户数 | 平均响应时间 | 成功率 | 资源利用率 |
-|------------|--------------|--------|------------|
-| 1 | 12.3s | 100% | 45% |
-| 5 | 18.7s | 98% | 72% |
-| 10 | 31.2s | 95% | 89% |
-| 20 | 52.8s | 87% | 95% |
 
 ### 5.3 结果分析
 
