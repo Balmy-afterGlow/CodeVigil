@@ -228,174 +228,51 @@ class CVEfixesKnowledgeBase:
             self.index = None
 
     def init_database(self):
-        """初始化数据库表结构"""
-        with sqlite3.connect(self.db_path) as conn:
-            # CVE基础信息表
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS cve_fixes (
-                    cve_id TEXT PRIMARY KEY,
-                    severity TEXT,
-                    description TEXT,
-                    cwe_id TEXT,
-                    cvss_score REAL,
-                    fix_hash TEXT,
-                    repo_url TEXT,
-                    repo_name TEXT,
-                    programming_language TEXT,
-                    repository_stars INTEGER,
-                    vulnerability_pattern TEXT,
-                    fix_pattern TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-
-            # 文件变更表
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS file_changes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    cve_id TEXT,
-                    filename TEXT,
-                    old_path TEXT,
-                    new_path TEXT,
-                    change_type TEXT,
-                    num_lines_added INTEGER,
-                    num_lines_deleted INTEGER,
-                    complexity_before REAL,
-                    complexity_after REAL,
-                    FOREIGN KEY (cve_id) REFERENCES cve_fixes (cve_id)
-                )
-            """)
-
-            # 代码变更详情表
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS code_changes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    cve_id TEXT,
-                    file_change_id INTEGER,
-                    method_name TEXT,
-                    start_line INTEGER,
-                    end_line INTEGER,
-                    code_before TEXT,
-                    code_after TEXT,
-                    change_type TEXT,
-                    FOREIGN KEY (cve_id) REFERENCES cve_fixes (cve_id),
-                    FOREIGN KEY (file_change_id) REFERENCES file_changes (id)
-                )
-            """)
-
-            # 全文搜索表
-            conn.execute("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS cve_search_fts USING fts5(
-                    cve_id, description, vulnerability_pattern, fix_pattern,
-                    content='cve_fixes', content_rowid='rowid'
-                )
-            """)
-
-            # 创建索引
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_severity ON cve_fixes(severity)"
-            )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_cwe ON cve_fixes(cwe_id)")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_language ON cve_fixes(programming_language)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_filename ON file_changes(filename)"
-            )
-
-    def add_cve_fix(self, cve_fix: CVEFixKnowledge) -> bool:
-        """添加CVE修复知识"""
+        """验证数据库表结构（CVEfixes数据库是只读的，不需要初始化）"""
+        # CVEfixes数据库是预构建的，包含以下表：
+        # - cve: CVE基础信息
+        # - fixes: CVE到修复提交的映射
+        # - commits: 提交信息
+        # - file_change: 文件变更
+        # - method_change: 方法级变更
+        # - cwe_classification: CVE到CWE的映射
+        # - cwe: CWE信息
+        # - repository: 仓库信息
+        
+        # 这里我们只验证表的存在，不创建新表
         try:
             with sqlite3.connect(self.db_path) as conn:
-                # 插入CVE基础信息
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO cve_fixes 
-                    (cve_id, severity, description, cwe_id, cvss_score, fix_hash, 
-                     repo_url, repo_name, programming_language, repository_stars,
-                     vulnerability_pattern, fix_pattern)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                    (
-                        cve_fix.cve_id,
-                        cve_fix.severity,
-                        cve_fix.description,
-                        cve_fix.cwe_id,
-                        cve_fix.cvss_score,
-                        cve_fix.fix_hash,
-                        cve_fix.repo_url,
-                        cve_fix.repo_name,
-                        cve_fix.programming_language,
-                        cve_fix.repository_stars,
-                        cve_fix.vulnerability_pattern,
-                        cve_fix.fix_pattern,
-                    ),
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('cve', 'fixes', 'file_change', 'method_change')"
                 )
-
-                # 插入文件变更
-                for file_change in cve_fix.affected_files:
-                    cursor = conn.execute(
-                        """
-                        INSERT INTO file_changes 
-                        (cve_id, filename, old_path, new_path, change_type, 
-                         num_lines_added, num_lines_deleted, complexity_before, complexity_after)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                        (
-                            cve_fix.cve_id,
-                            file_change.get("filename"),
-                            file_change.get("old_path"),
-                            file_change.get("new_path"),
-                            file_change.get("change_type"),
-                            file_change.get("num_lines_added", 0),
-                            file_change.get("num_lines_deleted", 0),
-                            file_change.get("complexity_before"),
-                            file_change.get("complexity_after"),
-                        ),
-                    )
-
-                    file_change_id = cursor.lastrowid
-
-                    # 插入该文件的代码变更
-                    for code_change in cve_fix.code_changes:
-                        if code_change.get("filename") == file_change.get("filename"):
-                            conn.execute(
-                                """
-                                INSERT INTO code_changes 
-                                (cve_id, file_change_id, method_name, start_line, end_line,
-                                 code_before, code_after, change_type)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                                (
-                                    cve_fix.cve_id,
-                                    file_change_id,
-                                    code_change.get("method_name"),
-                                    code_change.get("start_line"),
-                                    code_change.get("end_line"),
-                                    code_change.get("code_before"),
-                                    code_change.get("code_after"),
-                                    code_change.get("change_type"),
-                                ),
-                            )
-
-                # 更新全文搜索索引
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO cve_search_fts 
-                    (rowid, cve_id, description, vulnerability_pattern, fix_pattern)
-                    VALUES (last_insert_rowid(), ?, ?, ?, ?)
-                """,
-                    (
-                        cve_fix.cve_id,
-                        cve_fix.description,
-                        cve_fix.vulnerability_pattern,
-                        cve_fix.fix_pattern,
-                    ),
-                )
-
-            return True
+                tables = [row[0] for row in cursor.fetchall()]
+                required_tables = ['cve', 'fixes', 'file_change', 'method_change']
+                
+                missing_tables = set(required_tables) - set(tables)
+                if missing_tables:
+                    logger.warning(f"数据库缺少必要的表: {missing_tables}")
+                else:
+                    logger.info("数据库表结构验证通过")
+                    
         except Exception as e:
-            print(f"添加CVE修复知识失败: {e}")
+            logger.error(f"验证数据库表结构失败: {e}")
+
+    def add_cve_fix(self, cve_fix: CVEFixKnowledge) -> bool:
+        """添加CVE修复知识到向量索引（不修改原始数据库）"""
+        # CVEfixes数据库是只读的，我们只能将新知识添加到向量索引中
+        # 而不能修改原始数据库
+        try:
+            # 如果有向量搜索功能，将知识向量化并添加到索引
+            if VECTOR_SEARCH_AVAILABLE and self.embedding_model is not None:
+                vectorized_cve = self.vectorize_cve_knowledge(cve_fix)
+                if vectorized_cve:
+                    return self.add_to_vector_index(vectorized_cve)
+            
+            logger.warning("向量搜索功能不可用，无法添加CVE修复知识")
+            return False
+            
+        except Exception as e:
+            logger.error(f"添加CVE修复知识失败: {e}")
             return False
 
     def search_similar_vulnerabilities(
@@ -489,59 +366,53 @@ class CVEfixesKnowledgeBase:
                 conn.row_factory = sqlite3.Row
 
                 # 构建搜索条件
-                conditions = []
+                conditions = ["c.description IS NOT NULL"]
                 params = []
 
                 if language:
-                    conditions.append("cf.programming_language = ?")
+                    conditions.append("r.repo_language = ?")
                     params.append(language)
 
                 if severity:
-                    conditions.append("cf.severity = ?")
-                    params.append(severity)
+                    conditions.append("c.severity = ?")
+                    params.append(severity.upper())  # CVEfixes数据库中severity是大写
 
-                where_clause = " AND ".join(conditions) if conditions else "1=1"
+                where_clause = " AND ".join(conditions)
 
                 if search_query:
-                    # 全文搜索
-                    sql = f"""
-                        SELECT cf.*, 
-                               GROUP_CONCAT(fc.filename) as affected_filenames,
-                               COUNT(cc.id) as code_changes_count
-                        FROM cve_fixes cf
-                        JOIN cve_search_fts fts ON cf.rowid = fts.rowid
-                        LEFT JOIN file_changes fc ON cf.cve_id = fc.cve_id
-                        LEFT JOIN code_changes cc ON cf.cve_id = cc.cve_id
-                        WHERE fts MATCH ? AND {where_clause}
-                        GROUP BY cf.cve_id
-                        ORDER BY rank
-                        LIMIT ?
-                    """
-                    params = [search_query] + params + [str(limit)]
-                else:
-                    # 无搜索词时按严重性排序
-                    sql = f"""
-                        SELECT cf.*, 
-                               GROUP_CONCAT(fc.filename) as affected_filenames,
-                               COUNT(cc.id) as code_changes_count
-                        FROM cve_fixes cf
-                        LEFT JOIN file_changes fc ON cf.cve_id = fc.cve_id
-                        LEFT JOIN code_changes cc ON cf.cve_id = cc.cve_id
-                        WHERE {where_clause}
-                        GROUP BY cf.cve_id
-                        ORDER BY 
-                            CASE cf.severity 
-                                WHEN 'critical' THEN 1 
-                                WHEN 'high' THEN 2 
-                                WHEN 'medium' THEN 3 
-                                ELSE 4 
-                            END,
-                            cf.cvss_score DESC
-                        LIMIT ?
-                    """
-                    params = params + [str(limit)]
+                    # 基于描述的文本搜索
+                    conditions.append("c.description LIKE ?")
+                    params.append(f"%{search_query}%")
+                    where_clause = " AND ".join(conditions)
 
-                cursor = conn.execute(sql, params)
+                # 使用实际的CVEfixes数据库表结构
+                sql = f"""
+                    SELECT DISTINCT
+                        c.cve_id, 
+                        c.severity, 
+                        c.description, 
+                        cwe.cwe_id,
+                        c.cvss2_base_score as cvss_score,
+                        r.repo_language as programming_language
+                    FROM cve c
+                    LEFT JOIN cwe_classification cc ON c.cve_id = cc.cve_id
+                    LEFT JOIN cwe ON cc.cwe_id = cwe.cwe_id  
+                    LEFT JOIN fixes f ON c.cve_id = f.cve_id
+                    LEFT JOIN repository r ON f.repo_url = r.repo_url
+                    WHERE {where_clause}
+                    ORDER BY 
+                        CASE c.severity 
+                            WHEN 'CRITICAL' THEN 1 
+                            WHEN 'HIGH' THEN 2 
+                            WHEN 'MEDIUM' THEN 3 
+                            WHEN 'LOW' THEN 4
+                            ELSE 5 
+                        END,
+                        c.cvss2_base_score DESC
+                    LIMIT ?
+                """
+
+                cursor = conn.execute(sql, params + [limit])
                 results = cursor.fetchall()
 
                 return [dict(row) for row in results]
@@ -556,498 +427,58 @@ class CVEfixesKnowledgeBase:
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
 
-                # 获取基础信息
+                # 获取CVE基础信息
                 cursor = conn.execute(
-                    "SELECT * FROM cve_fixes WHERE cve_id = ?", (cve_id,)
+                    """
+                    SELECT c.*, cwe.cwe_id, cwe.cwe_name
+                    FROM cve c
+                    LEFT JOIN cwe_classification cc ON c.cve_id = cc.cve_id
+                    LEFT JOIN cwe ON cc.cwe_id = cwe.cwe_id
+                    WHERE c.cve_id = ?
+                    """, 
+                    (cve_id,)
                 )
                 cve_info = cursor.fetchone()
 
                 if not cve_info:
                     return None
 
-                # 获取文件变更
+                # 获取修复相关的文件变更信息
                 cursor = conn.execute(
                     """
-                    SELECT * FROM file_changes WHERE cve_id = ?
-                """,
+                    SELECT fc.*, c.hash as commit_hash
+                    FROM file_change fc
+                    JOIN commits c ON fc.hash = c.hash
+                    JOIN fixes f ON c.hash = f.hash AND c.repo_url = f.repo_url
+                    WHERE f.cve_id = ?
+                    """,
                     (cve_id,),
                 )
                 file_changes = [dict(row) for row in cursor.fetchall()]
 
-                # 获取代码变更
+                # 获取方法级别的代码变更信息
                 cursor = conn.execute(
                     """
-                    SELECT cc.*, fc.filename 
-                    FROM code_changes cc
-                    JOIN file_changes fc ON cc.file_change_id = fc.id
-                    WHERE cc.cve_id = ?
-                """,
+                    SELECT mc.*, fc.filename
+                    FROM method_change mc
+                    JOIN file_change fc ON mc.file_change_id = fc.file_change_id
+                    JOIN commits c ON fc.hash = c.hash
+                    JOIN fixes f ON c.hash = f.hash AND c.repo_url = f.repo_url
+                    WHERE f.cve_id = ?
+                    """,
                     (cve_id,),
                 )
-                code_changes = [dict(row) for row in cursor.fetchall()]
+                method_changes = [dict(row) for row in cursor.fetchall()]
 
                 return {
                     "cve_info": dict(cve_info),
                     "file_changes": file_changes,
-                    "code_changes": code_changes,
+                    "method_changes": method_changes,  # 改名以匹配实际的表结构
                 }
 
         except Exception as e:
-            print(f"获取CVE修复详情失败: {e}")
+            logger.error(f"获取CVE修复详情失败: {e}")
             return None
-
-    def generate_diff_context(self, vulnerability_info: Dict[str, Any]) -> str:
-        """
-        为AI生成diff时提供上下文信息
-        从向量数据库中检索相似的CVE案例，提供给大语言模型作为上下文
-        """
-        # 提取漏洞信息
-        vuln_type = vulnerability_info.get("type", "")
-        code_snippet = vulnerability_info.get("code_snippet", "")
-        language = vulnerability_info.get("language", "")
-        severity = vulnerability_info.get("severity", "")
-
-        # 搜索相似案例 - 同时使用向量搜索和文本搜索
-        similar_cases = self.search_similar_vulnerabilities(
-            vulnerability_description=vuln_type,
-            code_snippet=code_snippet,
-            language=language,
-            severity=severity,
-            limit=5,  # 增加搜索结果数量，后面会基于相似度排序
-        )
-
-        if not similar_cases:
-            return "未找到相似的CVE修复案例"
-
-        # 按相似度排序 - 向量搜索结果已经有相似度得分，文本搜索结果没有
-        similar_cases.sort(
-            key=lambda x: x.get("similarity_score", 0.2),  # 文本搜索默认得分0.2
-            reverse=True,
-        )
-
-        # 构建上下文
-        context_parts = []
-        context_parts.append("=== 相似CVE修复案例 ===\n")
-
-        for i, case in enumerate(similar_cases[:3], 1):  # 只使用前3个最相关的案例
-            # 添加相似度信息
-            similarity = case.get("similarity_score", 0)
-            similarity_str = f"(相似度: {similarity:.2f})" if similarity > 0 else ""
-
-            context_parts.append(f"案例 {i}: {case['cve_id']} {similarity_str}")
-            context_parts.append(f"严重性: {case['severity']}")
-            context_parts.append(f"描述: {case['description']}")
-
-            if case.get("cwe_id"):
-                context_parts.append(f"CWE: {case['cwe_id']}")
-
-            # 获取详细修复信息
-            fix_details = self.get_fix_details(case["cve_id"])
-            if fix_details:
-                if case.get("fix_pattern"):
-                    context_parts.append("修复模式:")
-                    context_parts.append(case["fix_pattern"])
-
-                # 添加代码变更示例
-                code_changes = fix_details.get("code_changes", [])
-                if code_changes:
-                    context_parts.append("修复示例代码:")
-                    for change in code_changes[:2]:  # 只显示前2个变更
-                        if change.get("code_before") and change.get("code_after"):
-                            context_parts.append(
-                                f"文件: {change.get('filename', 'unknown')}"
-                            )
-                            context_parts.append(f"修复前:\n{change['code_before']}")
-                            context_parts.append(f"修复后:\n{change['code_after']}")
-                            context_parts.append(
-                                f"修改说明: 删除{change.get('num_lines_deleted', 0)}行，添加{change.get('num_lines_added', 0)}行"
-                            )
-
-            context_parts.append("-" * 50)
-
-        return "\n".join(context_parts)
-
-    def load_from_cvefixes_db(
-        self,
-        cvefixes_db_path: str = None,
-        limit: int = 1000,
-        severity_filter: str = None,
-        language_filter: str = None,
-        batch_size: int = 100,
-    ):
-        """
-        从CVEfixes数据库高效加载部分数据构建知识库
-
-        Args:
-            cvefixes_db_path: CVEfixes数据库路径，如果为None则使用默认路径
-            limit: 最大加载记录数
-            severity_filter: 严重性过滤（critical, high, medium, low）
-            language_filter: 编程语言过滤
-            batch_size: 批量处理大小，用于控制内存使用
-        """
-        if cvefixes_db_path is None:
-            cvefixes_db_path = "/home/moyu/Code/Project/CodeVigil/data/CVEfixes_v1.0.8/Data/CVEfixes.db"
-
-        if not os.path.exists(cvefixes_db_path):
-            logger.error(f"CVEfixes数据库文件不存在: {cvefixes_db_path}")
-            return False
-
-        try:
-            logger.info(f"开始从CVEfixes数据库加载数据: {cvefixes_db_path}")
-            logger.info(
-                f"限制: {limit} 条记录, 严重性: {severity_filter}, 语言: {language_filter}"
-            )
-
-            # 连接到源数据库，使用只读模式和优化设置
-            with sqlite3.connect(
-                f"file:{cvefixes_db_path}?mode=ro", uri=True
-            ) as source_conn:
-                source_conn.row_factory = sqlite3.Row
-                # 数据库性能优化设置 - 针对大型数据库优化
-                source_conn.execute(
-                    "PRAGMA cache_size = -32000"
-                )  # 32MB缓存，减少内存使用
-                source_conn.execute("PRAGMA temp_store = MEMORY")
-                source_conn.execute("PRAGMA journal_mode = OFF")  # 只读模式，关闭日志
-                source_conn.execute("PRAGMA synchronous = OFF")  # 关闭同步，提高性能
-                source_conn.execute("PRAGMA query_only = ON")  # 查询模式
-
-                # 构建查询条件
-                conditions = [
-                    "c.description IS NOT NULL",
-                    "c.description != ''",
-                    "f.hash IS NOT NULL",
-                ]
-                params = []
-
-                if severity_filter:
-                    conditions.append("c.severity = ?")
-                    params.append(severity_filter)
-
-                if language_filter:
-                    conditions.append("r.repo_language = ?")
-                    params.append(language_filter)
-
-                # 优先选择有较多星标的仓库和较高严重性的CVE
-                where_clause = " AND ".join(conditions)
-
-                # 优化后的查询，基于实际表结构，增加更多过滤条件
-                query = f"""
-                    SELECT 
-                        c.cve_id,
-                        c.severity,
-                        c.description,
-                        CAST(c.cvss2_base_score AS REAL) as cvss_score,
-                        c.published_date,
-                        f.hash as fix_hash,
-                        r.repo_url,
-                        r.repo_name,
-                        r.repo_language as programming_language,
-                        CAST(r.stars_count AS INTEGER) as repository_stars
-                    FROM cve c
-                    INNER JOIN fixes f ON c.cve_id = f.cve_id
-                    INNER JOIN repository r ON f.repo_url = r.repo_url
-                    WHERE {where_clause}
-                        AND c.cvss2_base_score IS NOT NULL
-                        AND c.cvss2_base_score != ''
-                        AND r.stars_count IS NOT NULL
-                        AND CAST(r.stars_count AS INTEGER) > 10
-                    ORDER BY 
-                        CASE c.severity 
-                            WHEN 'CRITICAL' THEN 1 
-                            WHEN 'HIGH' THEN 2 
-                            WHEN 'MEDIUM' THEN 3 
-                            WHEN 'LOW' THEN 4
-                            ELSE 5 
-                        END,
-                        CAST(c.cvss2_base_score AS REAL) DESC,
-                        CAST(r.stars_count AS INTEGER) DESC
-                    LIMIT ?
-                """
-
-                params.append(str(limit))
-                logger.info("执行主查询SQL，获取CVE记录...")
-
-                cursor = source_conn.execute(query, params)
-
-                count = 0
-                processed = 0
-                batch_data = []
-
-                # 批量处理CVE记录
-                for row in cursor:
-                    processed += 1
-                    batch_data.append(dict(row))
-
-                    # 达到批量大小时处理一批数据
-                    if len(batch_data) >= batch_size:
-                        count += self._process_cve_batch(source_conn, batch_data)
-                        batch_data = []
-
-                        if processed % (batch_size * 2) == 0:
-                            logger.info(
-                                f"已处理 {processed} 条记录，成功加载 {count} 条"
-                            )
-
-                # 处理最后一批数据
-                if batch_data:
-                    count += self._process_cve_batch(source_conn, batch_data)
-
-                logger.info(
-                    f"CVEfixes知识库加载完成！处理了 {processed} 条记录，成功加载 {count} 条"
-                )
-                return count > 0
-
-        except Exception as e:
-            logger.error(f"从CVEfixes数据库加载失败: {e}")
-            return False
-
-    def _process_cve_batch(
-        self, source_conn: sqlite3.Connection, batch_data: List[Dict]
-    ) -> int:
-        """批量处理CVE数据"""
-        count = 0
-
-        for row_data in batch_data:
-            try:
-                cve_id = row_data["cve_id"]
-                fix_hash = row_data["fix_hash"]
-
-                # 获取提交信息 (单独查询以减少主查询复杂性)
-                commit_message = self._get_commit_message(
-                    source_conn, fix_hash, row_data["repo_url"]
-                )
-
-                # 获取CWE分类信息
-                cwe_id = self._get_cwe_for_cve(source_conn, cve_id)
-
-                # 获取文件变更信息
-                file_changes = self._get_file_changes(source_conn, fix_hash)
-
-                if not file_changes:
-                    continue  # 跳过没有文件变更的记录
-
-                # 获取代码变更信息
-                code_changes = self._get_code_changes(
-                    source_conn, fix_hash, file_changes[:5]
-                )
-
-                # 生成漏洞和修复模式
-                vulnerability_pattern = self._extract_vulnerability_pattern(
-                    row_data["description"] or "", code_changes
-                )
-                fix_pattern = self._extract_fix_pattern(
-                    commit_message or "", code_changes
-                )
-
-                # 创建CVEFixKnowledge对象
-                cve_fix = CVEFixKnowledge(
-                    cve_id=cve_id,
-                    severity=row_data["severity"] or "MEDIUM",
-                    description=row_data["description"] or "",
-                    cwe_id=cwe_id,
-                    cvss_score=row_data["cvss_score"],
-                    fix_hash=fix_hash,
-                    repo_url=row_data["repo_url"],
-                    repo_name=row_data["repo_name"] or "",
-                    programming_language=row_data["programming_language"] or "unknown",
-                    repository_stars=row_data["repository_stars"] or 0,
-                    vulnerability_pattern=vulnerability_pattern,
-                    fix_pattern=fix_pattern,
-                    affected_files=file_changes,
-                    code_changes=code_changes,
-                )
-
-                # 添加到知识库
-                if self.add_cve_fix(cve_fix):
-                    count += 1
-
-            except Exception as e:
-                logger.warning(f"处理CVE {row_data.get('cve_id', 'Unknown')} 失败: {e}")
-                continue
-
-        return count
-
-    def _get_cwe_for_cve(self, conn: sqlite3.Connection, cve_id: str) -> Optional[str]:
-        """获取CVE的CWE分类"""
-        try:
-            cursor = conn.execute(
-                """
-                SELECT cc.cwe_id
-                FROM cwe_classification cc
-                WHERE cc.cve_id = ?
-                LIMIT 1
-            """,
-                (cve_id,),
-            )
-            row = cursor.fetchone()
-            return row["cwe_id"] if row else None
-        except Exception:
-            return None
-
-    def _get_file_changes(
-        self, conn: sqlite3.Connection, fix_hash: str
-    ) -> List[Dict[str, Any]]:
-        """获取修复的文件变更信息"""
-        try:
-            cursor = conn.execute(
-                """
-                SELECT 
-                    filename, 
-                    old_path, 
-                    new_path, 
-                    change_type,
-                    CAST(num_lines_added AS INTEGER) as num_lines_added, 
-                    CAST(num_lines_deleted AS INTEGER) as num_lines_deleted,
-                    CAST(nloc AS INTEGER) as nloc,
-                    CAST(complexity AS INTEGER) as complexity,
-                    programming_language
-                FROM file_change 
-                WHERE hash = ?
-                AND filename IS NOT NULL
-                LIMIT 10
-            """,
-                (fix_hash,),
-            )
-
-            file_changes = []
-            for row in cursor:
-                file_changes.append(
-                    {
-                        "filename": row["filename"],
-                        "old_path": row["old_path"],
-                        "new_path": row["new_path"],
-                        "change_type": row["change_type"],
-                        "num_lines_added": row["num_lines_added"] or 0,
-                        "num_lines_deleted": row["num_lines_deleted"] or 0,
-                        "complexity_before": row["nloc"] or 0,
-                        "complexity_after": row["complexity"] or 0,
-                        "language": row["programming_language"],
-                    }
-                )
-
-            return file_changes
-        except Exception as e:
-            logger.warning(f"获取文件变更失败 {fix_hash}: {e}")
-            return []
-
-    def _get_code_changes(
-        self,
-        conn: sqlite3.Connection,
-        fix_hash: str,
-        file_changes: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """获取代码变更信息"""
-        code_changes = []
-
-        try:
-            for file_change in file_changes:
-                filename = file_change["filename"]
-
-                # 获取方法级别的变更
-                cursor = conn.execute(
-                    """
-                    SELECT 
-                        mc.name as method_name,
-                        mc.signature,
-                        mc.parameters,
-                        CAST(mc.start_line AS INTEGER) as start_line,
-                        CAST(mc.end_line AS INTEGER) as end_line,
-                        mc.code as code_after,
-                        mc.before_change as code_before
-                    FROM method_change mc
-                    INNER JOIN file_change fc ON mc.file_change_id = fc.file_change_id
-                    WHERE fc.hash = ? AND fc.filename = ?
-                    AND (mc.code IS NOT NULL OR mc.before_change IS NOT NULL)
-                    LIMIT 5
-                """,
-                    (fix_hash, filename),
-                )
-
-                for row in cursor:
-                    code_before = row["code_before"] or ""
-                    code_after = row["code_after"] or ""
-
-                    # 只保留有意义的代码变更
-                    if len(code_before) > 10 or len(code_after) > 10:
-                        code_changes.append(
-                            {
-                                "method_name": row["method_name"],
-                                "signature": row["signature"],
-                                "parameters": row["parameters"],
-                                "start_line": row["start_line"],
-                                "end_line": row["end_line"],
-                                "code_before": code_before[:2000],  # 限制长度
-                                "code_after": code_after[:2000],  # 限制长度
-                                "filename": filename,
-                                "change_type": "modified",
-                            }
-                        )
-
-        except Exception as e:
-            logger.warning(f"获取代码变更失败 {fix_hash}: {e}")
-
-        return code_changes
-
-    def _extract_vulnerability_pattern(
-        self, description: str, code_changes: List[Dict]
-    ) -> str:
-        """提取漏洞模式"""
-        # 简化的模式提取逻辑
-        patterns = []
-
-        # 从描述中提取关键词
-        keywords = [
-            "injection",
-            "xss",
-            "overflow",
-            "traversal",
-            "authentication",
-            "authorization",
-        ]
-        for keyword in keywords:
-            if keyword in description.lower():
-                patterns.append(keyword)
-
-        # 从代码变更中提取函数调用模式
-        for change in code_changes:
-            if change.get("code_before"):
-                # 简单的函数调用提取
-                import re
-
-                func_calls = re.findall(r"(\w+)\s*\(", change["code_before"])
-                patterns.extend(func_calls[:3])  # 最多取3个
-
-        return " ".join(set(patterns))
-
-    def _extract_fix_pattern(
-        self, commit_message: str, code_changes: List[Dict]
-    ) -> str:
-        """提取修复模式"""
-        fix_patterns = []
-
-        # 从提交信息中提取
-        fix_keywords = ["validate", "sanitize", "escape", "check", "verify", "filter"]
-        for keyword in fix_keywords:
-            if keyword in commit_message.lower():
-                fix_patterns.append(keyword)
-
-        # 从代码变更中提取修复模式
-        for change in code_changes:
-            if change.get("code_after"):
-                # 检查是否添加了验证逻辑
-                if (
-                    "validate" in change["code_after"]
-                    or "check" in change["code_after"]
-                ):
-                    fix_patterns.append("input_validation")
-                if (
-                    "escape" in change["code_after"]
-                    or "sanitize" in change["code_after"]
-                ):
-                    fix_patterns.append("output_encoding")
-
-        return " ".join(set(fix_patterns))
 
     def generate_diff_context_for_ai(
         self,
@@ -1088,23 +519,25 @@ class CVEfixesKnowledgeBase:
 
                 # 获取详细的修复信息
                 fix_details = self.get_fix_details(cve.get("cve_id", ""))
-                if fix_details and fix_details.get("code_changes"):
+                if fix_details and fix_details.get("method_changes"):
                     context_parts.append("修复代码示例:")
 
-                    for change in fix_details["code_changes"][:2]:  # 限制显示数量
-                        if change.get("code_before") and change.get("code_after"):
+                    for change in fix_details["method_changes"][:2]:  # 限制显示数量
+                        if change.get("before_change") and change.get("code"):
                             context_parts.append(
                                 f"  文件: {change.get('filename', 'Unknown')}"
                             )
                             context_parts.append(
-                                f"  方法: {change.get('method_name', 'Unknown')}"
+                                f"  方法: {change.get('name', 'Unknown')}"
                             )
                             context_parts.append("  修复前:")
-                            context_parts.append(
-                                f"    {change['code_before'][:500]}..."
-                            )
+                            # method_change表中before_change字段可能为空，使用code作为修复后的代码
+                            if change.get("before_change"):
+                                context_parts.append(
+                                    f"    {change['before_change'][:500]}..."
+                                )
                             context_parts.append("  修复后:")
-                            context_parts.append(f"    {change['code_after'][:500]}...")
+                            context_parts.append(f"    {change['code'][:500]}...")
 
                 # 添加修复模式总结
                 fix_pattern = cve.get("fix_pattern", "")
@@ -1338,39 +771,47 @@ CWE-ID: {cve_fix.cwe_id if cve_fix.cwe_id else "Unknown"}
 
                 # 构建查询条件
                 conditions = [
-                    "description IS NOT NULL",
-                    "description != ''",
-                    "vulnerability_pattern IS NOT NULL",
-                    "fix_pattern IS NOT NULL",
+                    "c.description IS NOT NULL",
+                    "c.description != ''",
                 ]
                 params = []
 
                 if severity_filter:
-                    conditions.append("severity = ?")
+                    conditions.append("c.severity = ?")
                     params.append(severity_filter)
 
                 if language_filter:
-                    conditions.append("programming_language = ?")
+                    conditions.append("r.repo_language = ?")
                     params.append(language_filter)
 
                 where_clause = " AND ".join(conditions)
 
-                # 查询CVE数据
+                # 查询CVE数据 - 根据实际的CVEfixes数据库表结构
                 query = f"""
-                SELECT 
-                    cve_id, severity, description, cwe_id, 
-                    cvss_score, programming_language, 
-                    vulnerability_pattern, fix_pattern
-                FROM cve_fixes
+                SELECT DISTINCT
+                    c.cve_id, 
+                    c.severity, 
+                    c.description, 
+                    cwe.cwe_id,
+                    c.cvss2_base_score as cvss_score,
+                    r.repo_language as programming_language,
+                    '' as vulnerability_pattern,
+                    '' as fix_pattern
+                FROM cve c
+                LEFT JOIN cwe_classification cc ON c.cve_id = cc.cve_id
+                LEFT JOIN cwe ON cc.cwe_id = cwe.cwe_id  
+                LEFT JOIN fixes f ON c.cve_id = f.cve_id
+                LEFT JOIN repository r ON f.repo_url = r.repo_url
                 WHERE {where_clause}
                 ORDER BY 
-                    CASE severity 
-                        WHEN 'critical' THEN 1 
-                        WHEN 'high' THEN 2 
-                        WHEN 'medium' THEN 3 
-                        ELSE 4 
+                    CASE c.severity 
+                        WHEN 'CRITICAL' THEN 1 
+                        WHEN 'HIGH' THEN 2 
+                        WHEN 'MEDIUM' THEN 3 
+                        WHEN 'LOW' THEN 4
+                        ELSE 5 
                     END,
-                    cvss_score DESC
+                    c.cvss2_base_score DESC
                 LIMIT ?
                 """
 
@@ -1391,17 +832,17 @@ CWE-ID: {cve_fix.cwe_id if cve_fix.cwe_id else "Unknown"}
                         # 构建CVE知识条目
                         cve_fix = CVEFixKnowledge(
                             cve_id=record["cve_id"],
-                            severity=record["severity"],
-                            description=record["description"],
+                            severity=record["severity"] or "UNKNOWN",
+                            description=record["description"] or "",
                             cwe_id=record["cwe_id"],
                             cvss_score=record["cvss_score"],
-                            fix_hash="",  # 这些字段不是必须的
+                            fix_hash="",  # 这些字段不是必须的，但需要为空字符串
                             repo_url="",
                             repo_name="",
-                            programming_language=record["programming_language"],
+                            programming_language=record["programming_language"] or "unknown",
                             repository_stars=0,
-                            vulnerability_pattern=record["vulnerability_pattern"],
-                            fix_pattern=record["fix_pattern"],
+                            vulnerability_pattern="",  # CVEfixes原始数据库中没有这个字段
+                            fix_pattern="",  # CVEfixes原始数据库中没有这个字段
                             affected_files=[],
                             code_changes=[],
                         )
