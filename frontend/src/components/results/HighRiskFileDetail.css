@@ -1,0 +1,124 @@
+/* 高危文件详情组件的额外样式 */
+.high-risk-file-detail {
+    transition: all 0.2s ease-in-out;
+}
+
+.high-risk-file-detail:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+/* 代码块样式覆盖 */
+.code-diff-container pre {
+    margin: 0 !important;
+    border-radius: 0 !important;
+}
+
+.code-diff-container .token.comment {
+    color: #6b7280;
+}
+
+.code-diff-container .token.string {
+    color: #059669;
+}
+
+.code-diff-container .token.keyword {
+    color: #7c3aed;
+}
+
+/* CVE参考标签样式 */
+.cve-reference-tag {
+    transition: all 0.2s ease;
+}
+
+.cve-reference-tag:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+}
+
+/* 风险分数进度条动画 */
+.risk-score-bar {
+    transition: width 0.5s ease-in-out;
+}
+
+/* 可折叠内容动画 */
+.collapsible-content {
+    animation: slideDown 0.3s ease-out;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        max-height: 0;
+    }
+
+    to {
+        opacity: 1;
+        max-height: 1000px;
+    }
+}
+
+/* 漏洞严重程度指示器 */
+.vulnerability-indicator {
+    position: relative;
+}
+
+.vulnerability-indicator::before {
+    content: '';
+    position: absolute;
+    left: -8px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 4px;
+    height: 20px;
+    border-radius: 2px;
+}
+
+.vulnerability-indicator.critical::before {
+    background-color: #ef4444;
+}
+
+.vulnerability-indicator.high::before {
+    background-color: #f97316;
+}
+
+.vulnerability-indicator.medium::before {
+    background-color: #f59e0b;
+}
+
+.vulnerability-indicator.low::before {
+    background-color: #10b981;
+}
+
+/* 搜索高亮 */
+.search-highlight {
+    background-color: #fef3c7;
+    padding: 1px 2px;
+    border-radius: 2px;
+}
+
+/* 代码行号样式 */
+.line-numbers {
+    user-select: none;
+    color: #6b7280;
+    border-right: 1px solid #e5e7eb;
+    padding-right: 8px;
+    margin-right: 8px;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .high-risk-file-detail {
+        margin: 0 -16px;
+        border-left: none;
+        border-right: none;
+        border-radius: 0;
+    }
+
+    .code-diff-container {
+        overflow-x: auto;
+    }
+
+    .code-diff-container pre {
+        font-size: 11px !important;
+    }
+}

@@ -30,6 +30,26 @@ export interface ProgressResponse {
     eta_minutes?: number;
 }
 
+// CVE参考信息
+export interface CVEReference {
+    cve_id: string;
+    description: string;
+    severity: string;
+    cvss_score?: number;
+    url?: string;
+    fix_commit_url?: string;
+}
+
+// 代码差异块
+export interface CodeDiffBlock {
+    description: string;
+    original_code: string;
+    fixed_code: string;
+    start_line: number;
+    end_line: number;
+    explanation: string;
+}
+
 export interface VulnerabilityInfo {
     title: string;
     severity: 'critical' | 'high' | 'medium' | 'low';
@@ -38,9 +58,11 @@ export interface VulnerabilityInfo {
     file_path: string;
     line_number: number;
     confidence: number;
-    fix_suggestion?: string;
-    affected_code?: string;
-    cve_references?: string[];
+    impact?: string;
+    remediation?: string;
+    code_snippet?: string;
+    cve_references?: CVEReference[];
+    fix_suggestions?: CodeDiffBlock[];
 }
 
 export interface FileRiskInfo {
@@ -51,6 +73,19 @@ export interface FileRiskInfo {
     lines_of_code: number;
 }
 
+// 高危文件详细信息
+export interface HighRiskFileInfo {
+    file_path: string;
+    risk_score: number;
+    risk_level: 'critical' | 'high' | 'medium' | 'low';
+    language: string;
+    lines_of_code: number;
+    vulnerabilities: VulnerabilityInfo[];
+    ai_analysis_summary?: string;
+    confidence?: number;
+    analysis_reasoning?: string;
+}
+
 export interface AnalysisResults {
     task_id: string;
     repository_url: string;
@@ -58,14 +93,19 @@ export interface AnalysisResults {
     summary: {
         total_files_analyzed: number;
         total_vulnerabilities: number;
+        high_risk_files_count: number;
         risk_level: string;
         critical_count: number;
         high_count: number;
         medium_count: number;
         low_count: number;
         analysis_duration_seconds: number;
+        ai_stage1_files?: number;
+        ai_stage2_files?: number;
+        ai_stage3_files?: number;
+        cve_references_count?: number;
     };
-    high_risk_files: FileRiskInfo[];
+    high_risk_files: HighRiskFileInfo[];
     vulnerabilities: VulnerabilityInfo[];
     created_at: string;
     completed_at?: string;

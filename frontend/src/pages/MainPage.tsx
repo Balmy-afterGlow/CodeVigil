@@ -9,7 +9,7 @@ import VulnerabilityDetail from '../components/results/VulnerabilityDetail';
 import { apiClient } from '../utils/apiClient';
 import type {
     AnalysisResults,
-    FileRiskInfo,
+    HighRiskFileInfo,
     VulnerabilityInfo
 } from '../types';
 
@@ -32,7 +32,7 @@ const MainPage: React.FC = () => {
     const [results, setResults] = useState<AnalysisResults | null>(null);
 
     // 选中的文件和漏洞
-    const [selectedFile, setSelectedFile] = useState<FileRiskInfo | null>(null);
+    const [selectedFile, setSelectedFile] = useState<HighRiskFileInfo | null>(null);
     const [selectedVulnerability, setSelectedVulnerability] = useState<VulnerabilityInfo | null>(null);
     const [fileVulnerabilities, setFileVulnerabilities] = useState<VulnerabilityInfo[]>([]);
 

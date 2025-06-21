@@ -104,63 +104,175 @@ async def get_analysis_results(task_id: str):
 
         if task.status != "completed":
             raise HTTPException(status_code=400, detail="任务尚未完成")
-        
+
         # 转换结果为前端期望的格式
         raw_result = task.result
-        
-        # 提取高风险文件信息
+
+        # 提取AI分析结果，优先使用第三阶段增强结果
+        ai_results = raw_result.get("final_ai_results", [])
+        three_stage_summary = raw_result.get("three_stage_ai_analysis", {}).get(
+            "summary", {}
+        )
+
+        # 构建高危文件详细信息
         high_risk_files = []
-        for file_result in raw_result.get("file_analysis", []):
-            if file_result.get("risk_score", 0) > 5.0:  # 风险分数大于5视为高风险
-                high_risk_files.append({
-                    "file_path": file_result.get("file_path", ""),
-                    "risk_score": file_result.get("risk_score", 0),
-                    "language": file_result.get("language", "unknown"),
-                    "vulnerabilities_count": len(file_result.get("security_issues", [])),
-                    "lines_of_code": file_result.get("lines_of_code", 0)
-                })
-        
+
+        # 从AI分析结果中获取高危文件信息
+        for ai_result in ai_results:
+            if hasattr(ai_result, "file_path"):
+                # 如果是dataclass对象，转换为字典
+                result_dict = (
+                    asdict(ai_result)
+                    if hasattr(ai_result, "__dataclass_fields__")
+                    else ai_result
+                )
+            else:
+                result_dict = ai_result
+
+            # 提取漏洞信息
+            vulnerabilities = []
+            for vuln in result_dict.get("vulnerabilities", []):
+                if hasattr(vuln, "title"):
+                    vuln_dict = (
+                        asdict(vuln) if hasattr(vuln, "__dataclass_fields__") else vuln
+                    )
+                else:
+                    vuln_dict = vuln
+
+                # 构建CVE参考信息
+                cve_references = []
+                for cve_ref in vuln_dict.get("cve_references", []):
+                    cve_references.append(
+                        {
+                            "cve_id": cve_ref.get("cve_id", ""),
+                            "description": cve_ref.get("description", ""),
+                            "severity": cve_ref.get("severity", "unknown"),
+                            "cvss_score": cve_ref.get("cvss_score"),
+                            "url": cve_ref.get("url"),
+                            "fix_commit_url": cve_ref.get("fix_commit_url"),
+                        }
+                    )
+
+                # 构建修复建议/diff块
+                fix_suggestions = []
+                for fix in result_dict.get("fix_suggestions", []):
+                    if hasattr(fix, "description"):
+                        fix_dict = (
+                            asdict(fix) if hasattr(fix, "__dataclass_fields__") else fix
+                        )
+                    else:
+                        fix_dict = fix
+
+                    fix_suggestions.append(
+                        {
+                            "description": fix_dict.get("description", ""),
+                            "original_code": fix_dict.get("original_code", ""),
+                            "fixed_code": fix_dict.get("fixed_code", ""),
+                            "start_line": fix_dict.get("start_line", 0),
+                            "end_line": fix_dict.get("end_line", 0),
+                            "explanation": fix_dict.get("explanation", ""),
+                        }
+                    )
+
+                vulnerabilities.append(
+                    {
+                        "title": vuln_dict.get("title", "未知漏洞"),
+                        "severity": vuln_dict.get("severity", "medium"),
+                        "cwe_id": vuln_dict.get("cwe_id"),
+                        "description": vuln_dict.get("description", "无描述"),
+                        "file_path": result_dict.get("file_path", ""),
+                        "line_number": vuln_dict.get("location", {}).get(
+                            "start_line", 0
+                        ),
+                        "confidence": vuln_dict.get("confidence", 0.5),
+                        "impact": vuln_dict.get("impact"),
+                        "remediation": vuln_dict.get("remediation"),
+                        "code_snippet": vuln_dict.get("code_snippet"),
+                        "cve_references": cve_references,
+                        "fix_suggestions": fix_suggestions,
+                    }
+                )
+
+            # 确定风险等级
+            risk_score = result_dict.get("ai_risk_score", 0)
+            if risk_score >= 90:
+                risk_level = "critical"
+            elif risk_score >= 70:
+                risk_level = "high"
+            elif risk_score >= 50:
+                risk_level = "medium"
+            else:
+                risk_level = "low"
+
+            high_risk_files.append(
+                {
+                    "file_path": result_dict.get("file_path", ""),
+                    "risk_score": risk_score,
+                    "risk_level": risk_level,
+                    "language": result_dict.get("language", "unknown"),
+                    "lines_of_code": result_dict.get("lines_of_code", 0),
+                    "vulnerabilities": vulnerabilities,
+                    "ai_analysis_summary": result_dict.get("summary"),
+                    "confidence": result_dict.get("confidence"),
+                    "analysis_reasoning": result_dict.get("analysis_reasoning"),
+                }
+            )
+
         # 按风险分数降序排序
         high_risk_files.sort(key=lambda x: x["risk_score"], reverse=True)
-        
-        # 提取漏洞信息
-        vulnerabilities = []
-        for ai_result in raw_result.get("final_ai_results", []):
-            for vuln in ai_result.get("vulnerabilities", []):
-                vulnerabilities.append({
-                    "title": vuln.get("title", "未知漏洞"),
-                    "severity": vuln.get("severity", "medium"),
-                    "cwe_id": vuln.get("cwe_id"),
-                    "description": vuln.get("description", "无描述"),
-                    "file_path": ai_result.get("file_path", ""),
-                    "line_number": vuln.get("line_number", 0),
-                    "confidence": vuln.get("confidence", 0.5),
-                    "fix_suggestion": vuln.get("fix_suggestion", ""),
-                    "affected_code": vuln.get("affected_code", ""),
-                    "cve_references": vuln.get("cve_references", [])
-                })
-        
+
+        # 提取所有漏洞信息（扁平化）
+        all_vulnerabilities = []
+        for file_data in high_risk_files:
+            all_vulnerabilities.extend(file_data["vulnerabilities"])
+
         # 构建前端所需格式
         formatted_result = {
             "task_id": task_id,
             "repository_url": raw_result.get("summary", {}).get("repository_url", ""),
             "status": "completed",
             "summary": {
-                "total_files_analyzed": raw_result.get("summary", {}).get("total_files", 0),
-                "total_vulnerabilities": raw_result.get("summary", {}).get("vulnerabilities_found", 0),
-                "risk_level": "高" if raw_result.get("summary", {}).get("vulnerabilities_found", 0) > 5 else "中",
-                "critical_count": sum(1 for v in vulnerabilities if v["severity"] == "critical"),
-                "high_count": sum(1 for v in vulnerabilities if v["severity"] == "high"),
-                "medium_count": sum(1 for v in vulnerabilities if v["severity"] == "medium"),
-                "low_count": sum(1 for v in vulnerabilities if v["severity"] == "low"),
-                "analysis_duration_seconds": raw_result.get("summary", {}).get("total_analysis_time", 0)
+                "total_files_analyzed": raw_result.get("summary", {}).get(
+                    "total_files", 0
+                ),
+                "total_vulnerabilities": len(all_vulnerabilities),
+                "high_risk_files_count": len(high_risk_files),
+                "risk_level": "高" if len(all_vulnerabilities) > 5 else "中",
+                "critical_count": sum(
+                    1 for v in all_vulnerabilities if v["severity"] == "critical"
+                ),
+                "high_count": sum(
+                    1 for v in all_vulnerabilities if v["severity"] == "high"
+                ),
+                "medium_count": sum(
+                    1 for v in all_vulnerabilities if v["severity"] == "medium"
+                ),
+                "low_count": sum(
+                    1 for v in all_vulnerabilities if v["severity"] == "low"
+                ),
+                "analysis_duration_seconds": raw_result.get("summary", {}).get(
+                    "total_analysis_time", 0
+                ),
+                "ai_stage1_files": three_stage_summary.get("stage1_files_scored", 0),
+                "ai_stage2_files": three_stage_summary.get("stage2_files_analyzed", 0),
+                "ai_stage3_files": three_stage_summary.get("stage3_files_enhanced", 0),
+                "cve_references_count": three_stage_summary.get(
+                    "cve_references_generated", 0
+                ),
             },
             "high_risk_files": high_risk_files,
-            "vulnerabilities": vulnerabilities,
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(raw_result.get("summary", {}).get("analysis_timestamp", time.time()))),
-            "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time()))
+            "vulnerabilities": all_vulnerabilities,
+            "created_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%S",
+                time.localtime(
+                    raw_result.get("summary", {}).get("analysis_timestamp", time.time())
+                ),
+            ),
+            "completed_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%S", time.localtime(time.time())
+            ),
         }
-        
+
         return formatted_result
     except HTTPException:
         raise
@@ -256,7 +368,7 @@ async def get_system_stats():
     """
     try:
         stats = task_manager.get_system_stats()
-        
+
         # 检查CVE知识库状态
         cve_kb_available = False
         try:
@@ -264,7 +376,7 @@ async def get_system_stats():
             cve_kb_available = os.path.exists(cve_db_path)
         except Exception:
             pass
-            
+
         return {
             "task_stats": stats,
             "cve_knowledge_base_available": cve_kb_available,
@@ -360,7 +472,7 @@ async def get_system_capabilities():
             ],
             "analysis_types": [
                 "静态代码分析",
-                "AST语法分析", 
+                "AST语法分析",
                 "Git历史分析",
                 "AI增强分析",
                 "CVE关联分析",
@@ -409,7 +521,7 @@ async def detailed_health_check():
         try:
             cve_db_path = "/home/moyu/Code/Project/CodeVigil/data/CVEfixes_v1.0.8/Data/CVEfixes.db"
             cve_kb_available = os.path.exists(cve_db_path)
-            
+
             health_status["components"]["cve_knowledge_base"] = {
                 "status": "available" if cve_kb_available else "not_available",
                 "database_path": cve_db_path,

@@ -1,11 +1,11 @@
 import React from 'react';
 import RiskBadge from '../common/RiskBadge';
-import type { FileRiskInfo } from '../../types';
+import type { HighRiskFileInfo } from '../../types';
 
 interface RiskFilesListProps {
-    files: FileRiskInfo[];
-    onFileSelect: (file: FileRiskInfo) => void;
-    selectedFile: FileRiskInfo | null;
+    files: HighRiskFileInfo[];
+    onFileSelect: (file: HighRiskFileInfo) => void;
+    selectedFile: HighRiskFileInfo | null;
 }
 
 const RiskFilesList: React.FC<RiskFilesListProps> = ({
@@ -46,8 +46,8 @@ const RiskFilesList: React.FC<RiskFilesListProps> = ({
                                 <div className="flex items-center justify-between mb-2">
                                     <div className="flex items-center">
                                         <span className={`w-2 h-2 rounded-full mr-2 ${riskLevel === 'critical' ? 'bg-risk-critical' :
-                                                riskLevel === 'high' ? 'bg-risk-high' :
-                                                    riskLevel === 'medium' ? 'bg-risk-medium' : 'bg-risk-low'
+                                            riskLevel === 'high' ? 'bg-risk-high' :
+                                                riskLevel === 'medium' ? 'bg-risk-medium' : 'bg-risk-low'
                                             }`}></span>
                                         <RiskBadge level={riskLevel} />
                                     </div>
@@ -59,7 +59,7 @@ const RiskFilesList: React.FC<RiskFilesListProps> = ({
                                         {file.file_path.split('/').pop()}
                                     </p>
                                     <span className="text-xs text-gray-500">
-                                        {file.vulnerabilities_count} 个问题
+                                        {file.vulnerabilities.length} 个问题
                                     </span>
                                 </div>
 

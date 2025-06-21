@@ -73,6 +73,7 @@ class ApiService {
                 summary: {
                     total_files_analyzed: 0,
                     total_vulnerabilities: 0,
+                    high_risk_files_count: 0,
                     risk_level: '',
                     critical_count: 0,
                     high_count: 0,

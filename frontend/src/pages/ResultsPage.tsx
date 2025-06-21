@@ -1,63 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
+import { AnalysisResults, ProgressResponse } from '../types';
 import ProgressTracker from '../components/ProgressTracker';
 import VulnerabilityList from '../components/VulnerabilityList';
 import RiskHeatmap from '../components/RiskHeatmap';
 import ExportButtons from '../components/ExportButtons';
-
-interface AnalysisResult {
-    task_id: string;
-    repository_info: {
-        url: string;
-        name: string;
-        branch: string;
-        total_files: number;
-        languages: Record<string, number>;
-    };
-    summary: {
-        total_files_analyzed: number;
-        high_risk_files: number;
-        vulnerabilities_found: number;
-        critical_issues: number;
-        high_issues: number;
-        medium_issues: number;
-        low_issues: number;
-    };
-    high_risk_files: Array<{
-        file_path: string;
-        risk_score: number;
-        language: string;
-        vulnerabilities_count: number;
-        lines_of_code: number;
-    }>;
-    vulnerabilities: Array<{
-        title: string;
-        severity: string;
-        cwe_id?: string;
-        description: string;
-        file_path: string;
-        line_number: number;
-        confidence: number;
-    }>;
-    status: string;
-    created_at: string;
-    completed_at?: string;
-}
-
-interface Progress {
-    task_id: string;
-    status: string;
-    progress: number;
-    current_step: string;
-    message: string;
-    eta_minutes?: number;
-}
+import HighRiskFileList from '../components/results/HighRiskFileList';
 
 const ResultsPage: React.FC = () => {
     const { taskId } = useParams<{ taskId: string }>();
-    const [results, setResults] = useState<AnalysisResult | null>(null);
-    const [progress, setProgress] = useState<Progress | null>(null);
+    const [results, setResults] = useState<AnalysisResults | null>(null);
+    const [progress, setProgress] = useState<ProgressResponse | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'overview' | 'files' | 'vulnerabilities' | 'heatmap'>('overview');
@@ -157,7 +111,7 @@ const ResultsPage: React.FC = () => {
                 <div>
                     <h1 className="text-3xl font-bold text-gray-900">分析结果</h1>
                     <p className="text-gray-600 mt-1">
-                        {results.repository_info.name} ({results.repository_info.branch})
+                        {results.repository_url}
                     </p>
                     <p className="text-sm text-gray-500">
                         完成时间: {formatDate(results.completed_at || results.created_at)}
@@ -191,7 +145,7 @@ const ResultsPage: React.FC = () => {
                         </div>
                         <div className="ml-4">
                             <p className="text-sm font-medium text-gray-600">高风险文件</p>
-                            <p className="text-2xl font-bold text-gray-900">{results.summary.high_risk_files}</p>
+                            <p className="text-2xl font-bold text-gray-900">{results.summary.high_risk_files_count || results.high_risk_files.length}</p>
                         </div>
                     </div>
                 </div>
@@ -205,7 +159,7 @@ const ResultsPage: React.FC = () => {
                         </div>
                         <div className="ml-4">
                             <p className="text-sm font-medium text-gray-600">发现漏洞</p>
-                            <p className="text-2xl font-bold text-gray-900">{results.summary.vulnerabilities_found}</p>
+                            <p className="text-2xl font-bold text-gray-900">{results.summary.total_vulnerabilities}</p>
                         </div>
                     </div>
                 </div>
@@ -219,7 +173,7 @@ const ResultsPage: React.FC = () => {
                         </div>
                         <div className="ml-4">
                             <p className="text-sm font-medium text-gray-600">严重问题</p>
-                            <p className="text-2xl font-bold text-gray-900">{results.summary.critical_issues}</p>
+                            <p className="text-2xl font-bold text-gray-900">{results.summary.critical_count}</p>
                         </div>
                     </div>
                 </div>
@@ -238,8 +192,8 @@ const ResultsPage: React.FC = () => {
                             key={tab.key}
                             onClick={() => setActiveTab(tab.key as any)}
                             className={`py-2 px-1 border-b-2 font-medium text-sm ${activeTab === tab.key
-                                    ? 'border-indigo-500 text-indigo-600'
-                                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                                ? 'border-indigo-500 text-indigo-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                                 }`}
                         >
                             {tab.icon} {tab.label}
@@ -257,10 +211,10 @@ const ResultsPage: React.FC = () => {
                             <h3 className="text-lg font-semibold text-gray-900 mb-4">漏洞严重性分布</h3>
                             <div className="space-y-3">
                                 {[
-                                    { level: 'critical', count: results.summary.critical_issues, label: '严重' },
-                                    { level: 'high', count: results.summary.high_issues, label: '高危' },
-                                    { level: 'medium', count: results.summary.medium_issues, label: '中危' },
-                                    { level: 'low', count: results.summary.low_issues, label: '低危' }
+                                    { level: 'critical', count: results.summary.critical_count, label: '严重' },
+                                    { level: 'high', count: results.summary.high_count, label: '高危' },
+                                    { level: 'medium', count: results.summary.medium_count, label: '中危' },
+                                    { level: 'low', count: results.summary.low_count, label: '低危' }
                                 ].map((item) => (
                                     <div key={item.level} className="flex items-center justify-between">
                                         <span className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${getSeverityColor(item.level)}`}>
@@ -272,50 +226,35 @@ const ResultsPage: React.FC = () => {
                             </div>
                         </div>
 
-                        {/* 语言分布 */}
-                        <div className="bg-white p-6 rounded-lg shadow border">
-                            <h3 className="text-lg font-semibold text-gray-900 mb-4">代码语言分布</h3>
-                            <div className="space-y-3">
-                                {Object.entries(results.repository_info.languages).map(([lang, count]) => (
-                                    <div key={lang} className="flex items-center justify-between">
-                                        <span className="text-sm text-gray-700">{lang}</span>
-                                        <span className="text-sm font-medium text-gray-900">{count} 文件</span>
+                        {/* AI分析统计 */}
+                        {results.summary.ai_stage1_files && (
+                            <div className="bg-white p-6 rounded-lg shadow border">
+                                <h3 className="text-lg font-semibold text-gray-900 mb-4">AI分析统计</h3>
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-700">第一阶段评分文件</span>
+                                        <span className="text-sm font-medium text-gray-900">{results.summary.ai_stage1_files}</span>
                                     </div>
-                                ))}
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-700">第二阶段分析文件</span>
+                                        <span className="text-sm font-medium text-gray-900">{results.summary.ai_stage2_files || 0}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-700">第三阶段增强文件</span>
+                                        <span className="text-sm font-medium text-gray-900">{results.summary.ai_stage3_files || 0}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-gray-700">CVE参考数量</span>
+                                        <span className="text-sm font-medium text-gray-900">{results.summary.cve_references_count || 0}</span>
+                                    </div>
+                                </div>
                             </div>
-                        </div>
+                        )}
                     </div>
                 )}
 
                 {activeTab === 'files' && (
-                    <div className="bg-white rounded-lg shadow border">
-                        <div className="px-6 py-4 border-b border-gray-200">
-                            <h3 className="text-lg font-semibold text-gray-900">高风险文件列表</h3>
-                        </div>
-                        <div className="divide-y divide-gray-200">
-                            {results.high_risk_files.map((file, index) => (
-                                <div key={index} className="px-6 py-4">
-                                    <div className="flex items-center justify-between">
-                                        <div>
-                                            <h4 className="text-sm font-medium text-gray-900">{file.file_path}</h4>
-                                            <p className="text-sm text-gray-500">
-                                                {file.language} • {file.lines_of_code} 行代码 • {file.vulnerabilities_count} 个漏洞
-                                            </p>
-                                        </div>
-                                        <div className="text-right">
-                                            <span className={`text-lg font-bold ${file.risk_score >= 80 ? 'text-red-600' :
-                                                    file.risk_score >= 60 ? 'text-orange-600' :
-                                                        file.risk_score >= 40 ? 'text-yellow-600' : 'text-green-600'
-                                                }`}>
-                                                {file.risk_score.toFixed(1)}
-                                            </span>
-                                            <p className="text-xs text-gray-500">风险评分</p>
-                                        </div>
-                                    </div>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
+                    <HighRiskFileList files={results.high_risk_files} />
                 )}
 
                 {activeTab === 'vulnerabilities' && (
@@ -323,7 +262,13 @@ const ResultsPage: React.FC = () => {
                 )}
 
                 {activeTab === 'heatmap' && (
-                    <RiskHeatmap files={results.high_risk_files} />
+                    <RiskHeatmap files={results.high_risk_files.map(file => ({
+                        file_path: file.file_path,
+                        risk_score: file.risk_score,
+                        language: file.language,
+                        vulnerabilities_count: file.vulnerabilities.length,
+                        lines_of_code: file.lines_of_code
+                    }))} />
                 )}
             </div>
         </div>
