@@ -1,64 +1,134 @@
-# CodeVigil - 开源仓库代码审计系统
+# CodeVigil - 基于AI的代码安全审计系统
 
-一个基于AI驱动的开源仓库代码安全审计系统，能够自动识别代码中的安全漏洞并提供修复建议。
+一个集成了CVE历史数据库的AI驱动代码安全审计系统，采用严格三阶段分析流水线，提供精准的漏洞检测和修复建议。
 
-## ✨ 功能特性
+## 🌟 2025-06-21 重大更新
 
-- 🔍 **智能代码分析**: 结合AST静态分析、Git历史分析和AI审计
-- 🎯 **风险评估**: 多维度评分算法识别高危文件
-- 🤖 **AI增强分析**: 基于大语言模型的漏洞检测和修复建议
-- 📚 **知识库RAG**: 集成CVE/CWE数据库提供精准修复方案
-- 📊 **可视化展示**: 风险热力图和进度追踪
-- 📋 **多格式报告**: 支持MD、PDF、JSON格式导出
-- 🌐 **现代化界面**: React + TypeScript + Tailwind CSS
-- 🐳 **容器化部署**: Docker Compose 一键部署
-- 📈 **实时监控**: 分析进度实时追踪
+### 🎯 核心改进
+- ✅ **重构三阶段AI分析流水线** - 批量风险评分 → 详细分析 → CVE关联增强
+- ✅ **集成50GB CVEfixes真实数据库** - 基于历史漏洞修复案例的智能建议
+- ✅ **完整本地开发支持** - 详细的非Docker本地运行指南 ([LOCAL_SETUP.md](LOCAL_SETUP.md))
+- ✅ **高效知识库管理工具** - 智能从大型数据库提取适量样本数据
+- ✅ **代码清理和重构** - 移除过时功能，优化API结构
+
+## ✨ 核心功能特性
+
+### 🤖 AI分析引擎
+- **三阶段严格分析**: 批量风险评分 → 详细漏洞分析 → CVE关联增强
+- **智能自适应**: 根据项目规模自动选择最优分析策略
+- **上下文感知**: 结合项目结构和依赖关系进行深度分析
+- **多语言支持**: Python、JavaScript、Java、C/C++、PHP、Go等
+
+### 🛡️ CVE知识库集成
+- **50GB真实数据**: 集成CVEfixes v1.0.8数据库，包含11,873个真实CVE案例
+- **智能修复建议**: 基于相似历史漏洞的修复模式生成具体建议
+- **模式匹配**: 根据漏洞类型和代码特征匹配相似修复案例
+- **Diff生成增强**: AI结合历史案例生成精准的修复代码diff
+
+### 📊 分析和可视化
+- **风险热力图**: 文件级别的安全风险可视化
+- **实时进度追踪**: WebSocket实时更新分析进度
+- **多维度评分**: CVSS、业务影响、修复难度综合评估
+- **趋势分析**: 项目安全状况历史趋势
+
+### 📋 报告和导出
+- **多格式导出**: PDF、HTML、JSON、CSV格式支持
+- **管理层报告**: 高级决策者友好的摘要报告
+- **技术详细报告**: 开发人员详细技术报告
+- **修复优先级**: 基于风险评分的智能排序
 
 ## 🏗️ 系统架构
 
 ```
 CodeVigil/
-├── backend/                 # 后端服务 (FastAPI + Python)
-│   ├── core/               # 核心模块
-│   │   ├── repository/     # 仓库处理模块
-│   │   ├── analyzer/       # 文件分析模块
-│   │   ├── ai/            # AI分析模块
-│   │   └── rag/           # RAG知识库模块
-│   ├── api/               # API接口
-│   ├── models/            # 数据模型
-│   └── utils/             # 工具函数
-├── frontend/              # 前端界面 (React + TypeScript)
-│   ├── src/
-│   │   ├── components/    # React组件
-│   │   ├── pages/         # 页面组件
-│   │   ├── hooks/         # 自定义钩子
-│   │   ├── utils/         # 工具函数
-│   │   └── types/         # TypeScript类型
-│   └── public/            # 静态资源
-├── data/                  # 数据存储
-│   ├── knowledge_base/    # RAG知识库
-│   ├── temp/             # 临时文件
-│   └── reports/          # 生成报告
-├── docs/                 # 项目文档
-├── scripts/              # 脚本文件
-└── nginx/               # Nginx配置
+├── 📄 LOCAL_SETUP.md           # 📖 本地开发完整指南 (新增)
+├── 📄 start_local.sh          # 🚀 本地环境一键启动 (新增)
+├── backend/                    # 🔧 后端服务 (FastAPI + Python)
+│   ├── core/ai/analyzer.py     #    三阶段AI分析引擎 (重构)
+│   ├── core/rag/               #    CVE知识库系统 (重写)
+│   ├── api/routes.py           #    清理后的API端点 (优化)
+│   └── requirements.txt        #    Python依赖
+├── frontend/                   # 🎨 前端界面 (React + TypeScript)
+│   ├── src/components/         #    可复用组件
+│   ├── src/pages/             #    主要页面
+│   └── package.json           #    Node.js依赖
+├── scripts/                    # 🛠️ 管理工具 (新增)
+│   ├── manage_cve_kb.py        #    CVE知识库管理工具
+│   ├── simple_kb_init.py       #    简化知识库初始化
+│   └── test_cve_db.py          #    数据库测试工具
+├── data/                       # 💾 数据存储
+│   ├── CVEfixes_v1.0.8/        #    50GB CVE历史数据库
+│   └── knowledge_base/         #    提取的知识库样本
+└── docs/                       # 📚 技术文档
 ```
 
 ## 🚀 快速开始
 
-### 方式一：一键启动 (推荐)
+### 🏠 本地开发 (推荐新手)
+
+📖 **完整指南**: [LOCAL_SETUP.md](LOCAL_SETUP.md) - 详细的本地开发环境设置指南
 
 ```bash
-# 克隆项目
-git clone https://github.com/user/codevigil.git
-cd codevigil
+# 1. 查看本地设置指南
+cat LOCAL_SETUP.md
 
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env 文件，填入必要的配置
+# 2. 一键启动本地环境
+./start_local.sh
 
-# 启动开发环境
+# 3. 手动启动 (如需自定义)
+cd backend && python app.py
+cd frontend && npm start
+```
+
+### 🐳 容器化部署
+
+```bash
+# 开发环境
 ./start.sh dev
+
+# 生产环境  
+./start.sh prod
+```
+
+### 🛠️ CVE知识库初始化 (可选但推荐)
+
+```bash
+# 快速初始化 500 条样本数据 (推荐)
+python scripts/simple_kb_init.py --limit 500
+
+# 高级管理工具 (从50GB数据库提取)
+python scripts/manage_cve_kb.py --action all --limit 1000
+```
+
+## 📋 系统要求
+
+### 基础要求
+- **Python**: 3.8+
+- **Node.js**: 16+ 
+- **内存**: 4GB+ (8GB推荐)
+- **磁盘**: 2GB+ (不含CVE数据库)
+
+### CVE知识库 (可选)
+- **磁盘空间**: 50GB+ (完整CVEfixes数据库)
+- **推荐配置**: SSD + 16GB RAM (获得最佳性能)
+
+## 🌐 访问地址
+
+启动成功后访问：
+- **前端应用**: http://localhost:3000
+- **后端API**: http://localhost:8000
+- **API文档**: http://localhost:8000/docs
+
+## 💡 使用示例
+
+### 分析GitHub仓库
+1. 在前端界面输入仓库URL: `https://github.com/username/repository`
+2. 选择分析模式 (快速/详细/增强)
+3. 观察实时分析进度
+4. 查看结果和修复建议
+5. 导出报告 (PDF/HTML/JSON)
+
+### 命令行使用
 
 # 或启动生产环境
 ./start.sh prod

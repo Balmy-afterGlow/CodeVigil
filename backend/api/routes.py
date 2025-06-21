@@ -5,16 +5,14 @@ API路由配置
 import time
 import os
 from dataclasses import asdict
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from typing import List, Optional, Dict, Any
-import json
+from fastapi import APIRouter, HTTPException, BackgroundTasks
+from typing import Optional
 
-from models.request_models import AnalysisRequest, RepositoryUrl
+from models.request_models import AnalysisRequest
 from models.response_models import AnalysisResponse, ProgressResponse
 from core.repository.manager import RepositoryManager
 from core.analyzer.file_analyzer import FileAnalyzer
-from core.ai.analyzer import AIAnalyzer
-from core.ai.analyzer import FileAnalysisInput
+from core.ai.analyzer import AIAnalyzer, FileAnalysisInput
 from core.task_manager import get_task_manager
 from core.report_generator import ReportGenerator
 from core.config import get_settings
@@ -202,9 +200,18 @@ async def get_system_stats():
     """
     try:
         stats = task_manager.get_system_stats()
+        
+        # 检查CVE知识库状态
+        cve_kb_available = False
+        try:
+            cve_db_path = "/home/moyu/Code/Project/CodeVigil/data/CVEfixes_v1.0.8/Data/CVEfixes.db"
+            cve_kb_available = os.path.exists(cve_db_path)
+        except Exception:
+            pass
+            
         return {
             "task_stats": stats,
-            "knowledge_base_loaded": knowledge_base.is_loaded(),
+            "cve_knowledge_base_available": cve_kb_available,
             "system_status": "healthy",
         }
     except Exception as e:
@@ -297,19 +304,20 @@ async def get_system_capabilities():
             ],
             "analysis_types": [
                 "静态代码分析",
-                "AST语法分析",
+                "AST语法分析", 
                 "Git历史分析",
                 "AI增强分析",
-                "RAG安全建议",
+                "CVE关联分析",
             ],
         },
         "export_formats": ["HTML", "Markdown", "JSON", "CSV", "PDF"],
         "real_time_features": ["WebSocket进度推送", "任务状态跟踪", "实时分析结果"],
         "ai_features": {
             "enabled": True,
-            "rag_knowledge_base": True,
+            "cve_knowledge_base": True,
             "security_recommendations": True,
             "code_review_suggestions": True,
+            "three_stage_analysis": True,
         },
     }
 
@@ -341,16 +349,19 @@ async def detailed_health_check():
             }
             health_status["status"] = "degraded"
 
-        # 检查知识库
+        # 检查CVE知识库
         try:
-            kb_loaded = knowledge_base.is_loaded()
-            health_status["components"]["knowledge_base"] = {
-                "status": "healthy" if kb_loaded else "not_loaded",
-                "loaded": kb_loaded,
+            cve_db_path = "/home/moyu/Code/Project/CodeVigil/data/CVEfixes_v1.0.8/Data/CVEfixes.db"
+            cve_kb_available = os.path.exists(cve_db_path)
+            
+            health_status["components"]["cve_knowledge_base"] = {
+                "status": "available" if cve_kb_available else "not_available",
+                "database_path": cve_db_path,
+                "available": cve_kb_available,
             }
         except Exception as e:
-            health_status["components"]["knowledge_base"] = {
-                "status": "unhealthy",
+            health_status["components"]["cve_knowledge_base"] = {
+                "status": "error",
                 "error": str(e),
             }
 

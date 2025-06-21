@@ -3,7 +3,6 @@ RAG (Retrieval Augmented Generation) 模块
 用于基于知识库的安全分析和建议生成
 """
 
-from .knowledge_base import KnowledgeBaseManager, VulnerabilityKnowledge
-from .query_engine import SecurityRAGQueryEngine
+from .cve_knowledge_base import CVEfixesKnowledgeBase, CVEFixKnowledge
 
-__all__ = ["KnowledgeBaseManager", "VulnerabilityKnowledge", "SecurityRAGQueryEngine"]
+__all__ = ["CVEfixesKnowledgeBase", "CVEFixKnowledge"]
