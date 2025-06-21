@@ -1,4 +1,6 @@
 // 通用工具函数
+import { MORANDI_COLORS, VULNERABILITY_SEVERITY } from './constants';
+
 export const formatDate = (dateString: string): string => {
     const date = new Date(dateString);
     return date.toLocaleString('zh-CN', {
@@ -36,16 +38,16 @@ export const formatDuration = (milliseconds: number): string => {
 
 export const getSeverityColor = (severity: string): string => {
     switch (severity) {
-        case 'critical':
-            return 'text-red-600 bg-red-50 border-red-200';
-        case 'high':
-            return 'text-orange-600 bg-orange-50 border-orange-200';
-        case 'medium':
-            return 'text-yellow-600 bg-yellow-50 border-yellow-200';
-        case 'low':
-            return 'text-blue-600 bg-blue-50 border-blue-200';
+        case VULNERABILITY_SEVERITY.CRITICAL.value:
+            return 'morandi-badge-critical';
+        case VULNERABILITY_SEVERITY.HIGH.value:
+            return 'morandi-badge-high';
+        case VULNERABILITY_SEVERITY.MEDIUM.value:
+            return 'morandi-badge-medium';
+        case VULNERABILITY_SEVERITY.LOW.value:
+            return 'morandi-badge-low';
         default:
-            return 'text-gray-600 bg-gray-50 border-gray-200';
+            return 'morandi-badge-medium';
     }
 };
 

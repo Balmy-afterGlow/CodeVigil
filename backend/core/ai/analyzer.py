@@ -11,9 +11,12 @@ import logging
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 import openai
+from dotenv import load_dotenv
 from core.rag.cve_knowledge_base import CVEfixesKnowledgeBase
 
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 
 @dataclass

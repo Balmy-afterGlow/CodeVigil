@@ -104,8 +104,64 @@ async def get_analysis_results(task_id: str):
 
         if task.status != "completed":
             raise HTTPException(status_code=400, detail="任务尚未完成")
-
-        return task.result
+        
+        # 转换结果为前端期望的格式
+        raw_result = task.result
+        
+        # 提取高风险文件信息
+        high_risk_files = []
+        for file_result in raw_result.get("file_analysis", []):
+            if file_result.get("risk_score", 0) > 5.0:  # 风险分数大于5视为高风险
+                high_risk_files.append({
+                    "file_path": file_result.get("file_path", ""),
+                    "risk_score": file_result.get("risk_score", 0),
+                    "language": file_result.get("language", "unknown"),
+                    "vulnerabilities_count": len(file_result.get("security_issues", [])),
+                    "lines_of_code": file_result.get("lines_of_code", 0)
+                })
+        
+        # 按风险分数降序排序
+        high_risk_files.sort(key=lambda x: x["risk_score"], reverse=True)
+        
+        # 提取漏洞信息
+        vulnerabilities = []
+        for ai_result in raw_result.get("final_ai_results", []):
+            for vuln in ai_result.get("vulnerabilities", []):
+                vulnerabilities.append({
+                    "title": vuln.get("title", "未知漏洞"),
+                    "severity": vuln.get("severity", "medium"),
+                    "cwe_id": vuln.get("cwe_id"),
+                    "description": vuln.get("description", "无描述"),
+                    "file_path": ai_result.get("file_path", ""),
+                    "line_number": vuln.get("line_number", 0),
+                    "confidence": vuln.get("confidence", 0.5),
+                    "fix_suggestion": vuln.get("fix_suggestion", ""),
+                    "affected_code": vuln.get("affected_code", ""),
+                    "cve_references": vuln.get("cve_references", [])
+                })
+        
+        # 构建前端所需格式
+        formatted_result = {
+            "task_id": task_id,
+            "repository_url": raw_result.get("summary", {}).get("repository_url", ""),
+            "status": "completed",
+            "summary": {
+                "total_files_analyzed": raw_result.get("summary", {}).get("total_files", 0),
+                "total_vulnerabilities": raw_result.get("summary", {}).get("vulnerabilities_found", 0),
+                "risk_level": "高" if raw_result.get("summary", {}).get("vulnerabilities_found", 0) > 5 else "中",
+                "critical_count": sum(1 for v in vulnerabilities if v["severity"] == "critical"),
+                "high_count": sum(1 for v in vulnerabilities if v["severity"] == "high"),
+                "medium_count": sum(1 for v in vulnerabilities if v["severity"] == "medium"),
+                "low_count": sum(1 for v in vulnerabilities if v["severity"] == "low"),
+                "analysis_duration_seconds": raw_result.get("summary", {}).get("total_analysis_time", 0)
+            },
+            "high_risk_files": high_risk_files,
+            "vulnerabilities": vulnerabilities,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(raw_result.get("summary", {}).get("analysis_timestamp", time.time()))),
+            "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time()))
+        }
+        
+        return formatted_result
     except HTTPException:
         raise
     except Exception as e:

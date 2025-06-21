@@ -17,7 +17,7 @@ from api.middleware import setup_middleware
 from core.database import init_db
 from core.config import get_settings
 from core.task_manager import get_task_manager
-from core.rag.knowledge_base import knowledge_base
+from core.rag.cve_knowledge_base import CVEfixesKnowledgeBase
 from core.notification import get_notification_manager
 
 # 加载环境变量
@@ -41,14 +41,32 @@ async def lifespan(app: FastAPI):
     logger.info("启动CodeVigil应用...")
 
     # 初始化数据库
-    await init_db()
+    # await init_db()
 
-    # 初始化知识库
+    # 初始化CVE知识库
     try:
-        knowledge_base.load_default_knowledge()
-        logger.info("知识库初始化完成")
+        cve_knowledge_base = CVEfixesKnowledgeBase()
+
+        # 检查向量数据库是否存在，如果不存在则构建
+        if not os.path.exists(cve_knowledge_base.vector_index_path):
+            logger.info("向量数据库不存在，开始构建...")
+            success = cve_knowledge_base.build_vector_knowledge_base(limit=1000)
+            if success:
+                logger.info("CVE向量知识库构建完成")
+            else:
+                logger.warning("CVE向量知识库构建失败，将使用文本搜索")
+        else:
+            logger.info("CVE向量知识库已存在，跳过构建")
+
+        # 将知识库实例存储到应用状态中
+        app.state.cve_knowledge_base = cve_knowledge_base
+        logger.info("CVE知识库初始化完成")
+
     except Exception as e:
-        logger.warning(f"知识库初始化失败: {e}")
+        logger.error(f"CVE知识库初始化失败: {e}")
+        # 创建一个默认实例，即使向量搜索不可用
+        app.state.cve_knowledge_base = CVEfixesKnowledgeBase()
+        logger.warning("将使用基础的CVE知识库功能")
 
     # 初始化任务管理器
     task_manager = get_task_manager(settings)
