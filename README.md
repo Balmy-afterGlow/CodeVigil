@@ -2,6 +2,10 @@
 
 一个集成了CVE历史数据库的AI驱动代码安全审计系统，采用严格三阶段分析流水线，提供精准的漏洞检测和修复建议。
 
+> 数据集获取：https://zenodo.org/records/13118970
+> 
+> CVEfixes托管仓库：https://github.com/secureIT-project/CVEfixes
+
 ## 🌟 2025-06-21 重大更新
 
 ### 🎯 核心改进
